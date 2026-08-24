@@ -1,3 +1,9 @@
+## 0.0.5
+
+* Expand the two-panel demo to 1920x2160 so both Android screens remain full height.
+* Keep the complete status bar, editor form, live preview, and save controls visible.
+* Publish a matching 960x1080 animated WebP for GitHub and pub.dev.
+
 ## 0.0.4
 
 * Rebuild the demo as a space-efficient two-panel 1920x1080 Android presentation.
