@@ -1,6 +1,6 @@
 name: flutter_cloudflare_dns
 description: "Android-first Flutter toolkit for diagnosing and managing Cloudflare DNS records."
-version: 0.0.2
+version: 0.0.3
 homepage: https://seungpyo.online
 repository: https://github.com/Seungpyo1007/flutter_cloudflare_dns
 issue_tracker: https://github.com/Seungpyo1007/flutter_cloudflare_dns/issues
@@ -10,9 +10,9 @@ topics:
   - networking
   - minecraft
 screenshots:
-  - description: Android-first Cloudflare DNS toolkit with a Material 3 dashboard and record editor.
-    path: assets/flutter_cloudflare_dns-hero.png
-  - description: Animated Android walkthrough of the dashboard and SRV record editor.
+  - description: Material 3 Android dashboard, DNS record summary, and SRV editor.
+    path: assets/android-showcase.png
+  - description: High-resolution Android walkthrough of the dashboard and SRV record editor.
     path: assets/flutter_cloudflare_dns-demo.webp
   - description: Android Material 3 DNS record editor.
     path: assets/android-record-editor.png

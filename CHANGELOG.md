@@ -1,3 +1,9 @@
+## 0.0.3
+
+* Replace the package hero and screenshot gallery with polished high-resolution artwork.
+* Upgrade the Android demo to a crisp 1080x2340, 30 fps presentation.
+* Use absolute GitHub media URLs so README visuals render reliably on pub.dev.
+
 ## 0.0.2
 
 * Add branded package artwork and an animated Android demo.
