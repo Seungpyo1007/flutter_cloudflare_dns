@@ -8,13 +8,13 @@ A Flutter-first toolkit for diagnosing and managing Cloudflare DNS. It ships
 with a Material 3 dashboard, a public DNS-over-HTTPS health checker, and safe
 gateway abstractions for A, AAAA, CNAME, TXT, and SRV records.
 
-> **Platform support:** version 0.0.3 officially supports Android only. Other
+> **Platform support:** version 0.0.4 officially supports Android only. Other
 > Flutter platforms are planned, but are not part of the current support policy.
 
 ## Android demo
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Seungpyo1007/flutter_cloudflare_dns/main/assets/flutter_cloudflare_dns-demo.webp" alt="High-resolution Android demo showing the DNS dashboard and SRV record editor" width="480">
+  <img src="https://raw.githubusercontent.com/Seungpyo1007/flutter_cloudflare_dns/main/assets/flutter_cloudflare_dns-demo.webp" alt="Two-panel Android demo showing live DNS health and SRV record editing" width="100%">
 </p>
 
 The demo shows the Material 3 dashboard, record filtering, the motion-driven
@@ -36,7 +36,7 @@ type picker, SRV fields, TTL presets, and live record preview. You can also
 
 ```yaml
 dependencies:
-  flutter_cloudflare_dns: ^0.0.3
+  flutter_cloudflare_dns: ^0.0.4
 ```
 
 The package requires Dart 3.12 and Flutter 3.44 or newer.

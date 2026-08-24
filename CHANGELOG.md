@@ -1,3 +1,10 @@
+## 0.0.4
+
+* Rebuild the demo as a space-efficient two-panel 1920x1080 Android presentation.
+* Preserve real dashboard, editor, scrolling, and health-check animations.
+* Upgrade the pub.dev animation to 960x540 at 12 fps while staying below the image limit.
+* Correct label and chip text alignment throughout the package artwork.
+
 ## 0.0.3
 
 * Replace the package hero and screenshot gallery with polished high-resolution artwork.
