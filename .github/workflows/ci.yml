@@ -44,6 +44,8 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter pub publish --dry-run
+      # pana validates screenshots with webpinfo, cwebp, and gif2webp.
+      - run: sudo apt-get update && sudo apt-get install -y webp
       - run: dart pub global activate pana
       - run: dart pub global run pana --no-warning --exit-code-threshold 0 .
 
