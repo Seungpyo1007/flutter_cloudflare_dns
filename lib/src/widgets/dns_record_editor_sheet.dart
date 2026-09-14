@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models/dns_record.dart';
@@ -53,6 +54,9 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
   late final TextEditingController _weight;
   late final TextEditingController _port;
   late final TextEditingController _target;
+  late final TextEditingController _caaFlags;
+  late final TextEditingController _caaValue;
+  late String _caaTag;
   late bool _proxied;
   late bool _ttlCustom;
   String? _formError;
@@ -69,6 +73,9 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     _weight = TextEditingController(text: '${record?.weight ?? 0}');
     _port = TextEditingController(text: '${record?.port ?? 25565}');
     _target = TextEditingController(text: record?.target ?? '');
+    _caaFlags = TextEditingController(text: '${record?.caaFlags ?? 0}');
+    _caaValue = TextEditingController(text: record?.caaValue ?? '');
+    _caaTag = record?.caaTag ?? caaPropertyTags.first;
     _proxied = record?.proxied ?? false;
     _ttlCustom = !_presetTtls.contains(record?.ttl ?? 1);
   }
@@ -83,6 +90,8 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       _weight,
       _port,
       _target,
+      _caaFlags,
+      _caaValue,
     ]) {
       controller.dispose();
     }
@@ -91,27 +100,59 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
 
   DnsRecord _buildRecord() {
     final ttl = int.tryParse(_ttl.text) ?? 1;
-    if (_type == DnsRecordType.srv) {
-      return DnsRecord.srv(
-        id: widget.initialRecord?.id,
-        name: _name.text.trim(),
-        priority: int.tryParse(_priority.text) ?? -1,
-        weight: int.tryParse(_weight.text) ?? -1,
-        port: int.tryParse(_port.text) ?? -1,
-        target: _target.text.trim(),
-        ttl: ttl,
-        comment: widget.initialRecord?.comment,
-      );
+    final initial = widget.initialRecord;
+    final name = _name.text.trim();
+    final tags = initial?.tags ?? const <String>[];
+    switch (_type) {
+      case DnsRecordType.srv:
+        return DnsRecord.srv(
+          id: initial?.id,
+          name: name,
+          priority: int.tryParse(_priority.text) ?? -1,
+          weight: int.tryParse(_weight.text) ?? -1,
+          port: int.tryParse(_port.text) ?? -1,
+          target: _target.text.trim(),
+          ttl: ttl,
+          comment: initial?.comment,
+          tags: tags,
+        );
+      case DnsRecordType.mx:
+        return DnsRecord.mx(
+          id: initial?.id,
+          name: name,
+          priority: int.tryParse(_priority.text) ?? -1,
+          mailServer: _content.text.trim(),
+          ttl: ttl,
+          comment: initial?.comment,
+          tags: tags,
+        );
+      case DnsRecordType.caa:
+        return DnsRecord.caa(
+          id: initial?.id,
+          name: name,
+          flags: int.tryParse(_caaFlags.text) ?? -1,
+          tag: _caaTag,
+          value: _caaValue.text.trim(),
+          ttl: ttl,
+          comment: initial?.comment,
+          tags: tags,
+        );
+      case DnsRecordType.a ||
+          DnsRecordType.aaaa ||
+          DnsRecordType.cname ||
+          DnsRecordType.txt ||
+          DnsRecordType.ns:
+        return DnsRecord(
+          id: initial?.id,
+          type: _type,
+          name: name,
+          content: _content.text.trim(),
+          ttl: ttl,
+          proxied: _supportsProxy ? _proxied : false,
+          comment: initial?.comment,
+          tags: tags,
+        );
     }
-    return DnsRecord(
-      id: widget.initialRecord?.id,
-      type: _type,
-      name: _name.text.trim(),
-      content: _content.text.trim(),
-      ttl: ttl,
-      proxied: _supportsProxy ? _proxied : false,
-      comment: widget.initialRecord?.comment,
-    );
   }
 
   bool get _supportsProxy =>
@@ -124,18 +165,27 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     DnsRecordType.aaaa => '2001:db8::1',
     DnsRecordType.cname => 'target.${widget.zoneName}',
     DnsRecordType.txt => 'Verification or policy value',
-    DnsRecordType.srv => '',
+    DnsRecordType.mx => 'mail.${widget.zoneName}',
+    DnsRecordType.ns => 'ns1.${widget.zoneName}',
+    DnsRecordType.srv || DnsRecordType.caa => '',
   };
 
-  String get _previewValue {
-    if (_type == DnsRecordType.srv) {
-      final target = _target.text.trim().isEmpty
-          ? 'mc.${widget.zoneName}'
-          : _target.text.trim();
-      return '${_priority.text} ${_weight.text} ${_port.text} $target';
-    }
-    return _content.text.trim().isEmpty ? _contentHint : _content.text.trim();
-  }
+  String get _previewValue => switch (_type) {
+    DnsRecordType.srv =>
+      '${_priority.text} ${_weight.text} ${_port.text} '
+          '${_textOr(_target, 'mc.${widget.zoneName}')}',
+    DnsRecordType.mx => '${_priority.text} ${_textOr(_content, _contentHint)}',
+    DnsRecordType.caa =>
+      '${_caaFlags.text} $_caaTag "${_textOr(_caaValue, 'letsencrypt.org')}"',
+    DnsRecordType.a ||
+    DnsRecordType.aaaa ||
+    DnsRecordType.cname ||
+    DnsRecordType.txt ||
+    DnsRecordType.ns => _textOr(_content, _contentHint),
+  };
+
+  String _textOr(TextEditingController controller, String fallback) =>
+      controller.text.trim().isEmpty ? fallback : controller.text.trim();
 
   void _submit() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -185,6 +235,8 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       _weight,
       _port,
       _target,
+      _caaFlags,
+      _caaValue,
     ]);
 
     return SingleChildScrollView(
@@ -278,7 +330,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
                 },
                 child: KeyedSubtree(
                   key: ValueKey<DnsRecordType>(_type),
-                  child: _buildTypeFields(context),
+                  child: _buildTypeFields(context, motion),
                 ),
               ),
             ),
@@ -460,54 +512,120 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     );
   }
 
-  Widget _buildTypeFields(BuildContext context) {
-    if (_type == DnsRecordType.srv) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Expanded(
-                child: _numberField(context, _priority, 'Priority', hint: '0'),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _numberField(context, _weight, 'Weight', hint: '0'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          _numberField(context, _port, 'Port', hint: '25565'),
-          const SizedBox(height: 18),
-          _sectionTitle(context, 'Target hostname'),
-          const SizedBox(height: 8),
-          TextFormField(
-            controller: _target,
-            decoration: InputDecoration(hintText: 'mc.${widget.zoneName}'),
-            validator: _required,
-          ),
-        ],
-      );
-    }
-    return Column(
+  Widget _buildTypeFields(
+    BuildContext context,
+    Duration motion,
+  ) => switch (_type) {
+    DnsRecordType.srv => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        _sectionTitle(
-          context,
-          _type == DnsRecordType.txt ? 'TXT content' : 'Content',
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Expanded(
+              child: _numberField(context, _priority, 'Priority', hint: '0'),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _numberField(context, _weight, 'Weight', hint: '0'),
+            ),
+          ],
         ),
+        const SizedBox(height: 18),
+        _numberField(context, _port, 'Port', hint: '25565'),
+        const SizedBox(height: 18),
+        _sectionTitle(context, 'Target hostname'),
         const SizedBox(height: 8),
         TextFormField(
-          controller: _content,
-          decoration: InputDecoration(hintText: _contentHint),
-          minLines: _type == DnsRecordType.txt ? 2 : 1,
-          maxLines: _type == DnsRecordType.txt ? 4 : 1,
+          controller: _target,
+          decoration: InputDecoration(hintText: 'mc.${widget.zoneName}'),
           validator: _required,
         ),
       ],
-    );
-  }
+    ),
+    DnsRecordType.mx => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _numberField(context, _priority, 'Priority', hint: '10'),
+        const SizedBox(height: 18),
+        _contentField(context, 'Mail server'),
+      ],
+    ),
+    DnsRecordType.caa => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _numberField(context, _caaFlags, 'Flags', hint: '0'),
+        const SizedBox(height: 18),
+        _sectionTitle(context, 'Property'),
+        const SizedBox(height: 10),
+        _ExpressiveChoiceBar<String>(
+          key: const ValueKey<String>('caa-tag-selector'),
+          options: const <_ChoiceOption<String>>[
+            _ChoiceOption<String>(
+              value: 'issue',
+              label: 'issue',
+              icon: Icons.verified_user_outlined,
+            ),
+            _ChoiceOption<String>(
+              value: 'issuewild',
+              label: 'issuewild',
+              icon: Icons.auto_awesome_mosaic_outlined,
+            ),
+            _ChoiceOption<String>(
+              value: 'iodef',
+              label: 'iodef',
+              icon: Icons.report_outlined,
+            ),
+          ],
+          selected: _caaTag,
+          compactUnselected: false,
+          selectedFactor: 1.28,
+          motion: motion,
+          semanticsSuffix: 'CAA property',
+          onSelected: (tag) => setState(() {
+            _caaTag = tag;
+            _formError = null;
+          }),
+        ),
+        const SizedBox(height: 18),
+        _sectionTitle(context, 'Value'),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _caaValue,
+          decoration: InputDecoration(
+            hintText: _caaTag == 'iodef'
+                ? 'mailto:security@${widget.zoneName}'
+                : 'letsencrypt.org',
+          ),
+          validator: _required,
+        ),
+      ],
+    ),
+    DnsRecordType.txt => _contentField(context, 'TXT content', multiline: true),
+    DnsRecordType.ns => _contentField(context, 'Nameserver'),
+    DnsRecordType.a ||
+    DnsRecordType.aaaa ||
+    DnsRecordType.cname => _contentField(context, 'Content'),
+  };
+
+  Widget _contentField(
+    BuildContext context,
+    String label, {
+    bool multiline = false,
+  }) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: <Widget>[
+      _sectionTitle(context, label),
+      const SizedBox(height: 8),
+      TextFormField(
+        controller: _content,
+        decoration: InputDecoration(hintText: _contentHint),
+        minLines: multiline ? 2 : 1,
+        maxLines: multiline ? 4 : 1,
+        validator: _required,
+      ),
+    ],
+  );
 
   Widget _numberField(
     BuildContext context,
@@ -541,6 +659,9 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     DnsRecordType.cname => Icons.redo_rounded,
     DnsRecordType.txt => Icons.notes_rounded,
     DnsRecordType.srv => Icons.hub_outlined,
+    DnsRecordType.mx => Icons.mail_outline_rounded,
+    DnsRecordType.caa => Icons.verified_user_outlined,
+    DnsRecordType.ns => Icons.dns_outlined,
   };
 
   String? _numberValidator(String? value) {
@@ -587,12 +708,18 @@ class _ExpressiveChoiceBar<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const spacing = 6.0;
+    // Below this width an unselected icon button no longer fits; scroll
+    // horizontally instead of squeezing.
+    const minBaseWidth = 44.0;
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = constraints.maxWidth - spacing * (options.length - 1);
-        final baseWidth = available / (options.length - 1 + selectedFactor);
+        final fittedWidth = available / (options.length - 1 + selectedFactor);
+        final scrolls = fittedWidth < minBaseWidth;
+        final baseWidth = scrolls ? minBaseWidth : fittedWidth;
         final extraWidth = baseWidth * (selectedFactor - 1);
-        return Row(
+        final row = Row(
+          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             for (var index = 0; index < options.length; index++) ...<Widget>[
               TweenAnimationBuilder<double>(
@@ -612,13 +739,35 @@ class _ExpressiveChoiceBar<T> extends StatelessWidget {
                     motion: motion,
                     semanticsSuffix: semanticsSuffix,
                     enabled: onSelected != null,
-                    onTap: () => onSelected?.call(options[index].value),
+                    onTap: () {
+                      onSelected?.call(options[index].value);
+                      if (scrolls) {
+                        Scrollable.ensureVisible(
+                          context,
+                          alignment: 0.5,
+                          duration: motion,
+                          curve: const Cubic(0.2, 0, 0, 1),
+                        );
+                      }
+                    },
                   ),
                 ),
               ),
               if (index != options.length - 1) const SizedBox(width: spacing),
             ],
           ],
+        );
+        if (!scrolls) return row;
+        // Flutter ignores mouse drags on scrollables by default; allow them so
+        // desktop and web users can reach every option.
+        return ScrollConfiguration(
+          behavior: ScrollConfiguration.of(
+            context,
+          ).copyWith(dragDevices: PointerDeviceKind.values.toSet()),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: row,
+          ),
         );
       },
     );
@@ -1034,5 +1183,8 @@ class _EditorHeader extends StatelessWidget {
     DnsRecordType.cname => Icons.alt_route_rounded,
     DnsRecordType.txt => Icons.verified_outlined,
     DnsRecordType.srv => Icons.sports_esports_rounded,
+    DnsRecordType.mx => Icons.forward_to_inbox_rounded,
+    DnsRecordType.caa => Icons.shield_outlined,
+    DnsRecordType.ns => Icons.dns_rounded,
   };
 }

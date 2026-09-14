@@ -1,3 +1,25 @@
+## 0.1.0
+
+**Breaking:** `DnsRecordType` gains `mx`, `caa`, and `ns`. Exhaustive `switch`
+statements over the enum need the new cases.
+
+* Fix zone and record listing silently stopping after the first page. Both
+  gateways now follow `result_info.total_pages`; proxies that return a bare
+  list keep working.
+* Add MX, CAA, and NS records to the model, validator, DoH diagnostics,
+  record list, editor sheet, and dashboard filters.
+* Add Cloudflare record `tags`, preserved when editing a record.
+* Accept `@` for the zone apex and underscore labels such as `_dmarc` for TXT
+  and CNAME names.
+* Declare iOS, web, Windows, macOS, and Linux support. `DirectCloudflareGateway`
+  cannot call the Cloudflare API from web browsers because of CORS; use the
+  proxy gateway there.
+* Keep the record type selector usable on narrow screens by scrolling instead
+  of shrinking buttons.
+* Document the remaining public REST gateway members and the library.
+* Require `http` 1.6.0 and verify against Flutter 3.47.
+* Add GitHub Actions CI for formatting, analysis, tests, pana, and example builds.
+
 ## 0.0.5
 
 * Expand the two-panel demo to 1920x2160 so both Android screens remain full height.

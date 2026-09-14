@@ -89,9 +89,16 @@ class _DnsRecordTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final accent = _typeColor(record.type, colors);
-    final content = record.type == DnsRecordType.srv
-        ? '${record.target}:${record.port}'
-        : record.content;
+    final content = switch (record.type) {
+      DnsRecordType.srv => '${record.target}:${record.port}',
+      DnsRecordType.caa => '${record.caaTag} ${record.caaValue}',
+      DnsRecordType.a ||
+      DnsRecordType.aaaa ||
+      DnsRecordType.cname ||
+      DnsRecordType.txt ||
+      DnsRecordType.mx ||
+      DnsRecordType.ns => record.content,
+    };
 
     return InkWell(
       onTap: enabled && onEdit != null ? () => onEdit!(record) : null,
@@ -169,6 +176,16 @@ class _DnsRecordTile extends StatelessWidget {
                           icon: Icons.route_rounded,
                           label:
                               'P${record.priority} · W${record.weight} · ${record.port}',
+                        ),
+                      if (record.type == DnsRecordType.mx)
+                        _MetadataLabel(
+                          icon: Icons.low_priority_rounded,
+                          label: 'Priority ${record.priority}',
+                        ),
+                      if (record.tags.isNotEmpty)
+                        _MetadataLabel(
+                          icon: Icons.sell_outlined,
+                          label: record.tags.join(', '),
                         ),
                     ],
                   ),
@@ -270,5 +287,17 @@ class _MetadataLabel extends StatelessWidget {
   DnsRecordType.srv => (
     container: colors.tertiaryContainer,
     foreground: colors.onTertiaryContainer,
+  ),
+  DnsRecordType.mx => (
+    container: colors.primaryContainer,
+    foreground: colors.onPrimaryContainer,
+  ),
+  DnsRecordType.caa => (
+    container: colors.errorContainer,
+    foreground: colors.onErrorContainer,
+  ),
+  DnsRecordType.ns => (
+    container: colors.surfaceContainerHighest,
+    foreground: colors.onSurfaceVariant,
   ),
 };

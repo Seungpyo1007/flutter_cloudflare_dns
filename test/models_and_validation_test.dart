@@ -86,6 +86,83 @@ void main() {
 
       expect(observed.canonicalContent, configured.canonicalContent);
     });
+
+    test('parses MX from the Cloudflare API and from DoH', () {
+      final api = DnsRecord.fromJson(<String, Object?>{
+        'type': 'MX',
+        'name': 'example.com',
+        'content': 'mail.example.com',
+        'priority': 10,
+      });
+      final doh = DnsRecord.fromJson(<String, Object?>{
+        'type': 'MX',
+        'name': 'example.com',
+        'content': '10 mail.example.com.',
+      });
+
+      expect(api.priority, 10);
+      expect(api.content, 'mail.example.com');
+      expect(doh.priority, 10);
+      expect(doh.canonicalContent, api.canonicalContent);
+      expect(api.toCloudflareJson(), <String, Object?>{
+        'type': 'MX',
+        'name': 'example.com',
+        'ttl': 1,
+        'content': 'mail.example.com',
+        'priority': 10,
+      });
+    });
+
+    test('parses CAA from the Cloudflare API and from DoH', () {
+      final api = DnsRecord.fromJson(<String, Object?>{
+        'type': 'CAA',
+        'name': 'example.com',
+        'content': '0 issue "letsencrypt.org"',
+        'data': <String, Object?>{
+          'flags': 0,
+          'tag': 'issue',
+          'value': 'letsencrypt.org',
+        },
+      });
+      final doh = DnsRecord.fromJson(<String, Object?>{
+        'type': 'CAA',
+        'name': 'example.com',
+        'content': '0 issuewild "Sectigo.com"',
+      });
+
+      expect(api.caaFlags, 0);
+      expect(api.content, '0 issue "letsencrypt.org"');
+      expect(doh.caaTag, 'issuewild');
+      expect(doh.caaValue, 'Sectigo.com');
+      expect(doh.canonicalContent, '0 issuewild sectigo.com');
+      expect(
+        DnsRecord.fromJson(api.toCloudflareJson()).canonicalContent,
+        api.canonicalContent,
+      );
+    });
+
+    test('round trips NS records and tags', () {
+      const record = DnsRecord(
+        type: DnsRecordType.ns,
+        name: 'dev.example.com',
+        content: 'ns1.example.net',
+        tags: <String>['env:dev', 'owner'],
+      );
+
+      final parsed = DnsRecord.fromJson(record.toCloudflareJson());
+
+      expect(parsed.type, DnsRecordType.ns);
+      expect(parsed.content, 'ns1.example.net');
+      expect(parsed.tags, <String>['env:dev', 'owner']);
+      expect(
+        const DnsRecord(
+          type: DnsRecordType.a,
+          name: 'example.com',
+          content: '192.0.2.1',
+        ).toCloudflareJson().containsKey('tags'),
+        isFalse,
+      );
+    });
   });
 
   group('DnsRecordValidator', () {
@@ -129,6 +206,76 @@ void main() {
       expect(
         DnsRecordValidator.validate(invalidSrv).single.code,
         'invalid_port',
+      );
+    });
+
+    test('accepts the zone apex and underscore verification names', () {
+      const apex = DnsRecord(
+        type: DnsRecordType.a,
+        name: '@',
+        content: '192.0.2.10',
+      );
+      const dmarc = DnsRecord(
+        type: DnsRecordType.txt,
+        name: '_dmarc.example.com',
+        content: 'v=DMARC1; p=none',
+      );
+      const underscoreHost = DnsRecord(
+        type: DnsRecordType.a,
+        name: '_bad.example.com',
+        content: '192.0.2.10',
+      );
+
+      expect(DnsRecordValidator.validate(apex), isEmpty);
+      expect(DnsRecordValidator.validate(dmarc), isEmpty);
+      expect(
+        DnsRecordValidator.validate(underscoreHost).single.code,
+        'invalid_name',
+      );
+    });
+
+    test('validates MX, CAA, and NS fields', () {
+      final validMx = DnsRecord.mx(
+        name: 'example.com',
+        priority: 10,
+        mailServer: 'mail.example.com',
+      );
+      final invalidMx = DnsRecord.mx(
+        name: 'example.com',
+        priority: 70000,
+        mailServer: 'not a host',
+      );
+      final validCaa = DnsRecord.caa(
+        name: 'example.com',
+        tag: 'iodef',
+        value: 'mailto:security@example.com',
+      );
+      final invalidCaa = DnsRecord.caa(
+        name: 'example.com',
+        flags: 256,
+        tag: 'contactemail',
+        value: '"quoted"',
+      );
+      const invalidNs = DnsRecord(
+        type: DnsRecordType.ns,
+        name: 'dev.example.com',
+        content: '',
+        tags: <String>[' '],
+      );
+
+      expect(DnsRecordValidator.validate(validMx), isEmpty);
+      expect(
+        DnsRecordValidator.validate(invalidMx).map((issue) => issue.code),
+        <String>['invalid_priority', 'invalid_target'],
+      );
+      expect(DnsRecordValidator.validate(validCaa), isEmpty);
+      expect(
+        DnsRecordValidator.validate(invalidCaa).map((issue) => issue.code),
+        <String>['invalid_flags', 'invalid_caa_tag', 'invalid_caa_value'],
+      );
+      expect(
+        DnsRecordValidator.validate(invalidNs).map((issue) => issue.code),
+        <String>['invalid_tag', 'invalid_target'],
       );
     });
   });

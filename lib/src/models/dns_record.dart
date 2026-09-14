@@ -4,7 +4,10 @@ enum DnsRecordType {
   aaaa('AAAA'),
   cname('CNAME'),
   txt('TXT'),
-  srv('SRV');
+  srv('SRV'),
+  mx('MX'),
+  caa('CAA'),
+  ns('NS');
 
   const DnsRecordType(this.wireName);
 
@@ -30,7 +33,10 @@ enum DnsRecordType {
   }
 }
 
-/// An A, AAAA, CNAME, TXT, or SRV DNS record.
+/// CAA property tags accepted by [DnsRecord.caa].
+const List<String> caaPropertyTags = <String>['issue', 'issuewild', 'iodef'];
+
+/// A supported DNS record: A, AAAA, CNAME, TXT, SRV, MX, CAA, or NS.
 class DnsRecord {
   /// Creates a DNS record.
   const DnsRecord({
@@ -41,10 +47,14 @@ class DnsRecord {
     this.ttl = 1,
     this.proxied,
     this.comment,
+    this.tags = const <String>[],
     this.priority,
     this.weight,
     this.port,
     this.target,
+    this.caaFlags,
+    this.caaTag,
+    this.caaValue,
   });
 
   /// Creates an SRV record.
@@ -57,6 +67,7 @@ class DnsRecord {
     required String target,
     int ttl = 1,
     String? comment,
+    List<String> tags = const <String>[],
   }) {
     return DnsRecord(
       id: id,
@@ -66,6 +77,7 @@ class DnsRecord {
       ttl: ttl,
       proxied: false,
       comment: comment,
+      tags: tags,
       priority: priority,
       weight: weight,
       port: port,
@@ -73,36 +85,126 @@ class DnsRecord {
     );
   }
 
-  /// Parses a Cloudflare-compatible record JSON object.
+  /// Creates an MX record that routes mail for [name] to [mailServer].
+  factory DnsRecord.mx({
+    String? id,
+    required String name,
+    required int priority,
+    required String mailServer,
+    int ttl = 1,
+    String? comment,
+    List<String> tags = const <String>[],
+  }) {
+    return DnsRecord(
+      id: id,
+      type: DnsRecordType.mx,
+      name: name,
+      content: mailServer,
+      ttl: ttl,
+      proxied: false,
+      comment: comment,
+      tags: tags,
+      priority: priority,
+    );
+  }
+
+  /// Creates a CAA record, for example `0 issue "letsencrypt.org"`.
+  ///
+  /// [tag] should be one of [caaPropertyTags].
+  factory DnsRecord.caa({
+    String? id,
+    required String name,
+    int flags = 0,
+    required String tag,
+    required String value,
+    int ttl = 1,
+    String? comment,
+    List<String> tags = const <String>[],
+  }) {
+    return DnsRecord(
+      id: id,
+      type: DnsRecordType.caa,
+      name: name,
+      content: '$flags $tag "$value"',
+      ttl: ttl,
+      proxied: false,
+      comment: comment,
+      tags: tags,
+      caaFlags: flags,
+      caaTag: tag,
+      caaValue: value,
+    );
+  }
+
+  /// Parses a Cloudflare-compatible or DNS-over-HTTPS record JSON object.
   factory DnsRecord.fromJson(Map<String, Object?> json) {
     final type = DnsRecordType.parse(json['type']);
     final data = _objectMap(json['data']);
     final rawContent = json['content']?.toString() ?? '';
-    final srvParts = type == DnsRecordType.srv
-        ? rawContent.trim().split(RegExp(r'\s+'))
+    final rawTags = json['tags'];
+    final tags = rawTags is List
+        ? rawTags.map((tag) => tag.toString()).toList(growable: false)
         : const <String>[];
 
-    int? srvValue(String key, int index) {
-      return _asInt(data?[key]) ??
-          _asInt(json[key]) ??
-          (srvParts.length >= 4 ? _asInt(srvParts[index]) : null);
-    }
+    var content = rawContent;
+    int? priority;
+    int? weight;
+    int? port;
+    String? target;
+    int? caaFlags;
+    String? caaTag;
+    String? caaValue;
 
-    final priority = srvValue('priority', 0);
-    final weight = srvValue('weight', 1);
-    final port = srvValue('port', 2);
-    final target =
-        data?['target']?.toString() ??
-        json['target']?.toString() ??
-        (srvParts.length >= 4 ? srvParts.sublist(3).join(' ') : null);
-    final content =
-        type == DnsRecordType.srv &&
-            priority != null &&
+    switch (type) {
+      case DnsRecordType.srv:
+        final parts = rawContent.trim().split(RegExp(r'\s+'));
+        int? srvValue(String key, int index) {
+          return _asInt(data?[key]) ??
+              _asInt(json[key]) ??
+              (parts.length >= 4 ? _asInt(parts[index]) : null);
+        }
+
+        priority = srvValue('priority', 0);
+        weight = srvValue('weight', 1);
+        port = srvValue('port', 2);
+        target =
+            data?['target']?.toString() ??
+            json['target']?.toString() ??
+            (parts.length >= 4 ? parts.sublist(3).join(' ') : null);
+        if (priority != null &&
             weight != null &&
             port != null &&
-            target != null
-        ? '$priority $weight $port $target'
-        : rawContent;
+            target != null) {
+          content = '$priority $weight $port $target';
+        }
+      case DnsRecordType.mx:
+        // Cloudflare keeps the priority separate; DoH answers inline it as
+        // `10 mail.example.com.`.
+        priority = _asInt(json['priority']) ?? _asInt(data?['priority']);
+        final inline = RegExp(r'^\s*(\d+)\s+(\S+)\s*$').firstMatch(rawContent);
+        if (priority == null && inline != null) {
+          priority = int.parse(inline.group(1)!);
+          content = inline.group(2)!;
+        }
+      case DnsRecordType.caa:
+        final inline = RegExp(
+          r'^\s*(\d+)\s+(\S+)\s+(.*?)\s*$',
+        ).firstMatch(rawContent);
+        caaFlags = _asInt(data?['flags']) ?? _asInt(inline?.group(1));
+        caaTag = data?['tag']?.toString() ?? inline?.group(2);
+        caaValue =
+            data?['value']?.toString() ??
+            inline?.group(3)?.replaceAll(RegExp(r'^"|"$'), '');
+        if (caaFlags != null && caaTag != null && caaValue != null) {
+          content = '$caaFlags $caaTag "$caaValue"';
+        }
+      case DnsRecordType.a ||
+          DnsRecordType.aaaa ||
+          DnsRecordType.cname ||
+          DnsRecordType.txt ||
+          DnsRecordType.ns:
+        break;
+    }
 
     return DnsRecord(
       id: json['id']?.toString(),
@@ -112,10 +214,14 @@ class DnsRecord {
       ttl: _asInt(json['ttl']) ?? 1,
       proxied: json['proxied'] as bool?,
       comment: json['comment']?.toString(),
+      tags: tags,
       priority: priority,
       weight: weight,
       port: port,
       target: target,
+      caaFlags: caaFlags,
+      caaTag: caaTag,
+      caaValue: caaValue,
     );
   }
 
@@ -128,7 +234,8 @@ class DnsRecord {
   /// Fully qualified or zone-relative record name.
   final String name;
 
-  /// Record content. SRV content is `priority weight port target`.
+  /// Record content. SRV content is `priority weight port target`, MX content
+  /// is the mail server hostname, and CAA content is `flags tag "value"`.
   final String content;
 
   /// TTL in seconds. Cloudflare uses `1` for automatic TTL.
@@ -140,7 +247,10 @@ class DnsRecord {
   /// Optional Cloudflare record comment.
   final String? comment;
 
-  /// SRV priority.
+  /// Cloudflare record tags, each formatted as `name` or `name:value`.
+  final List<String> tags;
+
+  /// SRV or MX priority.
   final int? priority;
 
   /// SRV weight.
@@ -152,6 +262,15 @@ class DnsRecord {
   /// SRV target hostname.
   final String? target;
 
+  /// CAA flags, usually `0`.
+  final int? caaFlags;
+
+  /// CAA property tag, one of [caaPropertyTags].
+  final String? caaTag;
+
+  /// CAA property value, such as `letsencrypt.org`.
+  final String? caaValue;
+
   /// Serializes this record for the Cloudflare DNS API.
   Map<String, Object?> toCloudflareJson() {
     final json = <String, Object?>{
@@ -159,22 +278,30 @@ class DnsRecord {
       'name': name,
       'ttl': ttl,
       if (comment != null && comment!.isNotEmpty) 'comment': comment,
+      if (tags.isNotEmpty) 'tags': tags,
     };
-    if (type == DnsRecordType.srv) {
-      json['data'] = <String, Object?>{
-        'priority': priority,
-        'weight': weight,
-        'port': port,
-        'target': target,
-      };
-    } else {
-      json['content'] = content;
-      if (proxied != null &&
-          (type == DnsRecordType.a ||
-              type == DnsRecordType.aaaa ||
-              type == DnsRecordType.cname)) {
-        json['proxied'] = proxied;
-      }
+    switch (type) {
+      case DnsRecordType.srv:
+        json['data'] = <String, Object?>{
+          'priority': priority,
+          'weight': weight,
+          'port': port,
+          'target': target,
+        };
+      case DnsRecordType.caa:
+        json['data'] = <String, Object?>{
+          'flags': caaFlags,
+          'tag': caaTag,
+          'value': caaValue,
+        };
+      case DnsRecordType.mx:
+        json['content'] = content;
+        json['priority'] = priority;
+      case DnsRecordType.a || DnsRecordType.aaaa || DnsRecordType.cname:
+        json['content'] = content;
+        if (proxied != null) json['proxied'] = proxied;
+      case DnsRecordType.txt || DnsRecordType.ns:
+        json['content'] = content;
     }
     return json;
   }
@@ -188,10 +315,14 @@ class DnsRecord {
     int? ttl,
     bool? proxied,
     String? comment,
+    List<String>? tags,
     int? priority,
     int? weight,
     int? port,
     String? target,
+    int? caaFlags,
+    String? caaTag,
+    String? caaValue,
   }) {
     return DnsRecord(
       id: id ?? this.id,
@@ -201,20 +332,31 @@ class DnsRecord {
       ttl: ttl ?? this.ttl,
       proxied: proxied ?? this.proxied,
       comment: comment ?? this.comment,
+      tags: tags ?? this.tags,
       priority: priority ?? this.priority,
       weight: weight ?? this.weight,
       port: port ?? this.port,
       target: target ?? this.target,
+      caaFlags: caaFlags ?? this.caaFlags,
+      caaTag: caaTag ?? this.caaTag,
+      caaValue: caaValue ?? this.caaValue,
     );
   }
 
   /// Normalized content used by diagnostics.
   String get canonicalContent {
-    final value = type == DnsRecordType.srv
-        ? '${priority ?? 0} ${weight ?? 0} ${port ?? 0} ${target ?? ''}'
-        : type == DnsRecordType.txt
-        ? content.trim().replaceAll(RegExp(r'^"|"$'), '')
-        : content;
+    final value = switch (type) {
+      DnsRecordType.srv =>
+        '${priority ?? 0} ${weight ?? 0} ${port ?? 0} ${target ?? ''}',
+      DnsRecordType.mx =>
+        '${priority ?? 0} ${content.trim().replaceAll(RegExp(r'\.$'), '')}',
+      DnsRecordType.caa => '${caaFlags ?? 0} ${caaTag ?? ''} ${caaValue ?? ''}',
+      DnsRecordType.txt => content.trim().replaceAll(RegExp(r'^"|"$'), ''),
+      DnsRecordType.a ||
+      DnsRecordType.aaaa ||
+      DnsRecordType.cname ||
+      DnsRecordType.ns => content,
+    };
     return value.trim().replaceAll(RegExp(r'\.$'), '').toLowerCase();
   }
 }

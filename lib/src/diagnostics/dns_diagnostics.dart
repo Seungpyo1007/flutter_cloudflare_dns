@@ -196,9 +196,12 @@ int? _asInt(Object? value) => value is int ? value : int.tryParse('$value');
 
 DnsRecordType? _typeFromCode(int? code) => switch (code) {
   1 => DnsRecordType.a,
+  2 => DnsRecordType.ns,
   5 => DnsRecordType.cname,
+  15 => DnsRecordType.mx,
   16 => DnsRecordType.txt,
   28 => DnsRecordType.aaaa,
   33 => DnsRecordType.srv,
+  257 => DnsRecordType.caa,
   _ => null,
 };

@@ -672,7 +672,9 @@ enum _RecordFilter {
   all('All', Icons.select_all_rounded),
   web('Web', Icons.public_rounded),
   verification('Verify', Icons.verified_outlined),
-  service('Services', Icons.sports_esports_outlined);
+  service('Services', Icons.sports_esports_outlined),
+  mail('Mail', Icons.mail_outline_rounded),
+  infrastructure('Infra', Icons.dns_outlined);
 
   const _RecordFilter(this.label, this.icon);
 
@@ -687,6 +689,9 @@ enum _RecordFilter {
           record.type == DnsRecordType.cname,
     _RecordFilter.verification => record.type == DnsRecordType.txt,
     _RecordFilter.service => record.type == DnsRecordType.srv,
+    _RecordFilter.mail => record.type == DnsRecordType.mx,
+    _RecordFilter.infrastructure =>
+      record.type == DnsRecordType.ns || record.type == DnsRecordType.caa,
   };
 }
 

@@ -9,6 +9,10 @@ import 'rest_gateway_support.dart';
 /// REST contract:
 /// `GET /zones`, `GET|POST /dns-records?zoneId=...`, and
 /// `PATCH|DELETE /dns-records/{recordId}?zoneId=...`.
+///
+/// List requests include a 1-based `page` query parameter. A backend that
+/// paginates should answer with `{ "result": [...], "result_info":
+/// { "total_pages": n } }`; a bare list is treated as the only page.
 class ProxyCloudflareGateway extends RestCloudflareDnsGateway {
   /// Creates a safe-by-default proxy gateway.
   ProxyCloudflareGateway({
@@ -33,22 +37,24 @@ class ProxyCloudflareGateway extends RestCloudflareDnsGateway {
 
   @override
   Future<List<DnsZone>> listZones() async {
-    final response = await send(
-      'GET',
-      _uri('zones'),
-      headers: await _headers(),
+    final headers = await _headers();
+    return parseZones(
+      await fetchAllPages(
+        (page) => _uri('zones', {'page': '$page'}),
+        headers: headers,
+      ),
     );
-    return parseZones(decode(response));
   }
 
   @override
   Future<List<DnsRecord>> listRecords(String zoneId) async {
-    final response = await send(
-      'GET',
-      _uri('dns-records', {'zoneId': zoneId}),
-      headers: await _headers(),
+    final headers = await _headers();
+    return parseRecords(
+      await fetchAllPages(
+        (page) => _uri('dns-records', {'zoneId': zoneId, 'page': '$page'}),
+        headers: headers,
+      ),
     );
-    return parseRecords(decode(response));
   }
 
   @override
