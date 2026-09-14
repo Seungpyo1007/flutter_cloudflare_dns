@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Flutter ${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported release from pubspec.yaml, plus the current stable.
+        # An empty version makes flutter-action pick the latest stable.
+        include:
+          - label: '3.44.0'
+            version: '3.44.0'
+          - label: stable
+            version: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ matrix.version }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - if: matrix.label == 'stable'
+        run: dart format --output=none --set-exit-if-changed .
+      - run: flutter analyze
+      - run: flutter test
+
+  package:
+    name: Package score
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter pub publish --dry-run
+      # pana validates screenshots with webpinfo, cwebp, and gif2webp.
+      - run: sudo apt-get update && sudo apt-get install -y webp
+      - run: dart pub global activate pana
+      - run: dart pub global run pana --no-warning --exit-code-threshold 0 .
+
+  example:
+    name: Example (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [web, apk]
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.target == 'apk'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - working-directory: example
+        run: flutter pub get
+      - working-directory: example
+        run: flutter build ${{ matrix.target }} ${{ matrix.target == 'apk' && '--debug' || '' }}

@@ -7,11 +7,19 @@ import '../models/dns_zone.dart';
 import '../validation/dns_record_validator.dart';
 import 'cloudflare_dns_gateway.dart';
 
+/// Shared JSON transport for REST-based [CloudflareDnsGateway]s.
 abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
+  /// Creates a gateway that sends requests through [client].
   RestCloudflareDnsGateway({required this.client});
 
+  /// Upper bound on pages read by [fetchAllPages], guarding against a
+  /// misbehaving server that never reports its last page.
+  static const int maxPages = 1000;
+
+  /// HTTP client used for every request.
   final http.Client client;
 
+  /// Sends a JSON request and buffers the full response.
   Future<http.Response> send(
     String method,
     Uri uri, {
@@ -28,7 +36,48 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     return client.send(request).then(http.Response.fromStream);
   }
 
+  /// Decodes [response], throwing [CloudflareDnsException] on failure.
+  ///
+  /// Returns the `result` value of a Cloudflare-style envelope, or the whole
+  /// JSON body when it is not wrapped.
   Object? decode(http.Response response) {
+    final decoded = _decodeChecked(response);
+    if (decoded is Map && decoded.containsKey('result')) {
+      return decoded['result'];
+    }
+    return decoded;
+  }
+
+  /// Reads every page of a list endpoint and concatenates the results.
+  ///
+  /// [uriForPage] builds the request URI for a 1-based page number. Paging
+  /// continues while the envelope's `result_info.total_pages` reports more
+  /// pages, so servers that return a bare list are read once. A page whose
+  /// result is not a list is returned unchanged for the caller to reject.
+  Future<Object?> fetchAllPages(
+    Uri Function(int page) uriForPage, {
+    Map<String, String>? headers,
+  }) async {
+    final items = <Object?>[];
+    for (var page = 1; page <= maxPages; page++) {
+      final decoded = _decodeChecked(
+        await send('GET', uriForPage(page), headers: headers),
+      );
+      final result = decoded is Map && decoded.containsKey('result')
+          ? decoded['result']
+          : decoded;
+      if (result is! List) return result;
+      items.addAll(result);
+      final resultInfo = decoded is Map ? decoded['result_info'] : null;
+      final totalPages = resultInfo is Map
+          ? int.tryParse('${resultInfo['total_pages']}')
+          : null;
+      if (totalPages == null || page >= totalPages || result.isEmpty) break;
+    }
+    return items;
+  }
+
+  Object? _decodeChecked(http.Response response) {
     Object? decoded;
     try {
       decoded = response.body.isEmpty ? null : jsonDecode(response.body);
@@ -44,12 +93,10 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     if (decoded is Map && decoded['success'] == false) {
       throw errorFrom(decoded, response.statusCode);
     }
-    if (decoded is Map && decoded.containsKey('result')) {
-      return decoded['result'];
-    }
     return decoded;
   }
 
+  /// Builds a sanitized exception from a decoded error body.
   CloudflareDnsException errorFrom(Object? decoded, int statusCode) {
     String? message;
     String? code;
@@ -70,6 +117,7 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     );
   }
 
+  /// Parses a list of zones.
   List<DnsZone> parseZones(Object? result) {
     if (result is! List) {
       throw const CloudflareDnsException('Expected a list of DNS zones.');
@@ -80,6 +128,7 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
         .toList(growable: false);
   }
 
+  /// Parses a list of records, skipping unsupported DNS types.
   List<DnsRecord> parseRecords(Object? result) {
     if (result is! List) {
       throw const CloudflareDnsException('Expected a list of DNS records.');
@@ -91,6 +140,7 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
         .toList(growable: false);
   }
 
+  /// Parses a single record.
   DnsRecord parseRecord(Object? result) {
     if (result is! Map) {
       throw const CloudflareDnsException('Expected a DNS record.');
@@ -98,6 +148,7 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     return DnsRecord.fromJson(_stringMap(result));
   }
 
+  /// Validates [record] and serializes it as a write request body.
   Map<String, Object?> writeBody(DnsRecord record) {
     DnsRecordValidator.validateOrThrow(record);
     return record.toCloudflareJson();

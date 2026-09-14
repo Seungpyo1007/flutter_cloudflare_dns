@@ -146,7 +146,7 @@ void main() {
 
     expect(find.byType(SliverAppBar), findsOneWidget);
     expect(find.byType(FloatingActionButton), findsOneWidget);
-    expect(find.byType(FilterChip), findsNWidgets(4));
+    expect(find.byType(FilterChip), findsNWidgets(6));
     expect(tester.takeException(), isNull);
   });
 
@@ -231,6 +231,98 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('seconds'), findsOneWidget);
+  });
+
+  testWidgets('record editor shows MX and CAA fields on a phone', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DnsRecord? saved;
+    await tester.pumpWidget(
+      _app(
+        Builder(
+          builder: (context) => Center(
+            child: FilledButton(
+              onPressed: () async {
+                saved = await DnsRecordEditorSheet.show(
+                  context,
+                  zoneName: 'example.com',
+                );
+              },
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open editor'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final mxType = find.bySemanticsLabel('MX record type');
+    await tester.ensureVisible(mxType);
+    await tester.tap(mxType);
+    await tester.pumpAndSettle();
+    expect(find.text('Mail server'), findsOneWidget);
+    expect(find.text('Priority'), findsOneWidget);
+
+    final caaType = find.bySemanticsLabel('CAA record type');
+    await tester.ensureVisible(caaType);
+    await tester.tap(caaType);
+    await tester.pumpAndSettle();
+    expect(find.text('Flags'), findsOneWidget);
+    expect(find.text('Property'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.bySemanticsLabel('issuewild CAA property'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, 'example.com');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'letsencrypt.org'),
+      'sectigo.com',
+    );
+    await tester.pump();
+    expect(find.text('0 issuewild "sectigo.com"'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Save record'));
+    await tester.tap(find.text('Save record'));
+    await tester.pumpAndSettle();
+    expect(saved?.type, DnsRecordType.caa);
+    expect(saved?.caaTag, 'issuewild');
+    expect(saved?.caaValue, 'sectigo.com');
+  });
+
+  testWidgets('record list shows CAA values, MX priority, and tags', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        DnsRecordList(
+          records: <DnsRecord>[
+            DnsRecord.mx(
+              name: 'example.com',
+              priority: 10,
+              mailServer: 'mail.example.com',
+              tags: const <String>['team:mail'],
+            ),
+            DnsRecord.caa(
+              name: 'example.com',
+              tag: 'issue',
+              value: 'letsencrypt.org',
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('mail.example.com'), findsOneWidget);
+    expect(find.text('Priority 10'), findsOneWidget);
+    expect(find.text('team:mail'), findsOneWidget);
+    expect(find.text('issue letsencrypt.org'), findsOneWidget);
   });
 }
 

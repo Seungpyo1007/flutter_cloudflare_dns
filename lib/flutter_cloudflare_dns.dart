@@ -1,3 +1,5 @@
+/// Cloudflare DNS toolkit for Flutter: DNS-over-HTTPS diagnostics, proxy and
+/// direct Cloudflare API gateways, record validation, and Material 3 widgets.
 library;
 
 export 'src/diagnostics/dns_diagnostics.dart';

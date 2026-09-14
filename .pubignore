@@ -9,8 +9,7 @@ example/build/
 example/pubspec.lock
 example/android/.gradle/
 example/android/local.properties
-example/ios/
-example/web/
+example/.idea/
 media/
 dashboard-preview.png
 dashboard-preview-v2.png

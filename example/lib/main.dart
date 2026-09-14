@@ -128,6 +128,18 @@ class DemoDnsGateway implements CloudflareDnsGateway {
       port: 25565,
       target: 'mc.seungpyo.online',
     ),
+    DnsRecord.mx(
+      id: 'mail',
+      name: 'seungpyo.online',
+      priority: 10,
+      mailServer: 'mail.seungpyo.online',
+    ),
+    DnsRecord.caa(
+      id: 'caa',
+      name: 'seungpyo.online',
+      tag: 'issue',
+      value: 'letsencrypt.org',
+    ),
   ];
 
   @override

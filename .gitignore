@@ -36,7 +36,3 @@ migrate_working_dir/
 /dashboard-preview-v2.png
 /dashboard-preview-v2-full.png
 /new-record-expressive.png
-
-# The initial example release is Android-only.
-/example/ios/
-/example/web/

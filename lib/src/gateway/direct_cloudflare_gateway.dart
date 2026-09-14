@@ -8,6 +8,9 @@ import 'rest_gateway_support.dart';
 ///
 /// This is intended for trusted, personal, or internal tools. Distributed apps
 /// should use [ProxyCloudflareGateway] so Cloudflare tokens stay on a server.
+///
+/// Not usable from Flutter web with the default [apiBaseUri]: the Cloudflare
+/// API does not send CORS headers, so browsers block the requests.
 class DirectCloudflareGateway extends RestCloudflareDnsGateway {
   /// Creates a direct gateway.
   ///
@@ -57,22 +60,27 @@ class DirectCloudflareGateway extends RestCloudflareDnsGateway {
 
   @override
   Future<List<DnsZone>> listZones() async {
-    final response = await send(
-      'GET',
-      _uri('zones', {'per_page': '50'}),
-      headers: await _headers(),
+    final headers = await _headers();
+    return parseZones(
+      await fetchAllPages(
+        (page) => _uri('zones', {'page': '$page', 'per_page': '50'}),
+        headers: headers,
+      ),
     );
-    return parseZones(decode(response));
   }
 
   @override
   Future<List<DnsRecord>> listRecords(String zoneId) async {
-    final response = await send(
-      'GET',
-      _uri('zones/$zoneId/dns_records', {'per_page': '500'}),
-      headers: await _headers(),
+    final headers = await _headers();
+    return parseRecords(
+      await fetchAllPages(
+        (page) => _uri('zones/$zoneId/dns_records', {
+          'page': '$page',
+          'per_page': '500',
+        }),
+        headers: headers,
+      ),
     );
-    return parseRecords(decode(response));
   }
 
   @override
