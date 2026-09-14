@@ -17,6 +17,8 @@ statements over the enum need the new cases.
 * Keep the record type selector usable on narrow screens by scrolling instead
   of shrinking buttons.
 * Document the remaining public REST gateway members and the library.
+* Lower the Dart SDK constraint to `^3.12.0` so the documented Flutter 3.44.0
+  minimum (which ships Dart 3.12.0) can actually resolve the package.
 * Require `http` 1.6.0 and verify against Flutter 3.47.
 * Add GitHub Actions CI for formatting, analysis, tests, pana, and example builds.
 

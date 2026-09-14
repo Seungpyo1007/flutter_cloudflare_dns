@@ -8,22 +8,27 @@ on:
 
 jobs:
   test:
-    name: Test (Flutter ${{ matrix.flutter }})
+    name: Test (Flutter ${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # Lowest supported release from pubspec.yaml, plus the current stable.
-        flutter: ['3.44.0', 'stable']
+        # An empty version makes flutter-action pick the latest stable.
+        include:
+          - label: '3.44.0'
+            version: '3.44.0'
+          - label: stable
+            version: ''
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ matrix.flutter == 'stable' && '' || matrix.flutter }}
+          flutter-version: ${{ matrix.version }}
           channel: stable
           cache: true
       - run: flutter pub get
-      - if: matrix.flutter == 'stable'
+      - if: matrix.label == 'stable'
         run: dart format --output=none --set-exit-if-changed .
       - run: flutter analyze
       - run: flutter test
