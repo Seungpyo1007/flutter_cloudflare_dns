@@ -372,6 +372,119 @@ void main() {
     expect(saved?.comment, '');
     expect(saved?.tags, <String>['env:prod', 'owner:web']);
   });
+
+  testWidgets('dashboard search filters records by name or value', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = TestGateway(
+      zoneFuture: Future<List<DnsZone>>.value(const <DnsZone>[
+        DnsZone(id: 'zone-1', name: 'example.com'),
+      ]),
+      records: const <DnsRecord>[
+        DnsRecord(
+          id: 'a-1',
+          type: DnsRecordType.a,
+          name: 'example.com',
+          content: '192.0.2.1',
+        ),
+        DnsRecord(
+          id: 'txt-1',
+          type: DnsRecordType.txt,
+          name: '_dmarc.example.com',
+          content: 'v=DMARC1; p=none',
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _app(
+        CloudflareDnsDashboard(
+          gateway: gateway,
+          diagnostics: HealthyDiagnostics(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    List<DnsRecord> visible() =>
+        tester.widget<DnsRecordList>(find.byType(DnsRecordList)).records;
+    final searchField = find.descendant(
+      of: find.byType(SearchBar),
+      matching: find.byType(TextField),
+    );
+    expect(visible(), hasLength(2));
+
+    await tester.enterText(searchField, 'DMARC');
+    await tester.pumpAndSettle();
+    expect(visible().single.id, 'txt-1');
+
+    await tester.enterText(searchField, '192.0.2');
+    await tester.pumpAndSettle();
+    expect(visible().single.id, 'a-1');
+  });
+
+  testWidgets('record menu offers copy and duplicate', (tester) async {
+    DnsRecord? duplicated;
+    await tester.pumpWidget(
+      _app(
+        DnsRecordList(
+          records: const <DnsRecord>[
+            DnsRecord(
+              id: 'a-1',
+              type: DnsRecordType.a,
+              name: 'example.com',
+              content: '192.0.2.1',
+            ),
+          ],
+          onDuplicate: (record) => duplicated = record,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('Record actions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Copy value'), findsOneWidget);
+    await tester.tap(find.text('Duplicate'));
+    await tester.pumpAndSettle();
+
+    expect(duplicated?.id, 'a-1');
+  });
+
+  testWidgets('dashboard compares resolvers in a sheet', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = TestGateway(
+      zoneFuture: Future<List<DnsZone>>.value(const <DnsZone>[
+        DnsZone(id: 'zone-1', name: 'example.com'),
+      ]),
+    );
+    await tester.pumpWidget(
+      _app(
+        CloudflareDnsDashboard(
+          gateway: gateway,
+          diagnostics: HealthyDiagnostics(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Compare resolvers'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Resolver comparison'), findsOneWidget);
+    expect(
+      find.text('1 of 1 records differ between resolvers.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Google: no answer'), findsOneWidget);
+  });
 }
 
 Widget _app(Widget child) => MaterialApp(
@@ -393,13 +506,44 @@ class HealthyDiagnostics extends DnsDiagnostics {
       issues: const <DnsIssue>[],
     );
   }
+
+  @override
+  Future<List<DnsResolverComparison>> compareResolvers(
+    Iterable<DnsRecord> records, {
+    Map<String, Uri>? resolvers,
+  }) async => <DnsResolverComparison>[
+    for (final record in records)
+      DnsResolverComparison(
+        name: record.name,
+        type: record.type,
+        answers: <String, List<DnsRecord>>{
+          'Cloudflare': <DnsRecord>[record],
+          'Google': const <DnsRecord>[],
+        },
+      ),
+  ];
 }
 
 class TestGateway implements CloudflareDnsGateway {
-  TestGateway({this.zoneFuture, this.zoneError});
+  TestGateway({
+    this.zoneFuture,
+    this.zoneError,
+    this.records = _defaultRecords,
+  });
+
+  static const _defaultRecords = <DnsRecord>[
+    DnsRecord(
+      id: 'a-1',
+      type: DnsRecordType.a,
+      name: 'example.com',
+      content: '192.0.2.1',
+      proxied: false,
+    ),
+  ];
 
   final Future<List<DnsZone>>? zoneFuture;
   final Object? zoneError;
+  final List<DnsRecord> records;
 
   @override
   Future<List<DnsZone>> listZones() async {
@@ -409,15 +553,7 @@ class TestGateway implements CloudflareDnsGateway {
   }
 
   @override
-  Future<List<DnsRecord>> listRecords(String zoneId) async => const <DnsRecord>[
-    DnsRecord(
-      id: 'a-1',
-      type: DnsRecordType.a,
-      name: 'example.com',
-      content: '192.0.2.1',
-      proxied: false,
-    ),
-  ];
+  Future<List<DnsRecord>> listRecords(String zoneId) async => records;
 
   @override
   Future<DnsRecord> createRecord(String zoneId, DnsRecord record) async =>

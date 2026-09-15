@@ -43,6 +43,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   DnsZone? _selectedZone;
   DnsHealthReport? _report;
   _RecordFilter _filter = _RecordFilter.all;
+  final _search = TextEditingController();
+  bool _comparing = false;
   bool _loading = true;
   bool _writing = false;
   bool _checking = false;
@@ -63,6 +65,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   @override
   void dispose() {
     _ownedDiagnostics?.close();
+    _search.dispose();
     super.dispose();
   }
 
@@ -180,6 +183,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     setState(() {
       _selectedZone = selected;
       _filter = _RecordFilter.all;
+      _search.clear();
       _report = null;
     });
     await _loadRecords();
@@ -244,6 +248,32 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     }
   }
 
+  Future<void> _compareResolvers() async {
+    final expected = _records
+        .where((record) => record.proxied != true)
+        .toList(growable: false);
+    if (expected.isEmpty || _comparing) return;
+    setState(() => _comparing = true);
+    List<DnsResolverComparison>? comparisons;
+    try {
+      comparisons = await _diagnostics.compareResolvers(expected);
+    } on Object catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      // Stop the button spinner before the sheet opens, not after it closes.
+      if (mounted) setState(() => _comparing = false);
+    }
+    if (comparisons == null || !mounted) return;
+    final results = comparisons;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (_) => _ResolverComparisonSheet(comparisons: results),
+    );
+  }
+
   void _showError(Object error) {
     ScaffoldMessenger.of(
       context,
@@ -257,8 +287,15 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     final services = _records
         .where((record) => record.type == DnsRecordType.srv)
         .length;
+    final query = _search.text.trim().toLowerCase();
     final visibleRecords = _records
-        .where((record) => _filter.includes(record))
+        .where(
+          (record) =>
+              _filter.includes(record) &&
+              (query.isEmpty ||
+                  record.name.toLowerCase().contains(query) ||
+                  record.content.toLowerCase().contains(query)),
+        )
         .toList(growable: false);
 
     return Stack(
@@ -314,6 +351,28 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                                 error: _healthError,
                                 onRefresh: _checkHealth,
                               ),
+                            if (_selectedZone != null) ...<Widget>[
+                              const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: FilledButton.tonalIcon(
+                                  onPressed: _comparing || _records.isEmpty
+                                      ? null
+                                      : _compareResolvers,
+                                  icon: _comparing
+                                      ? const SizedBox.square(
+                                          dimension: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.compare_arrows_rounded,
+                                        ),
+                                  label: const Text('Compare resolvers'),
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 12),
                             _DnsSummary(
                               total: _records.length,
@@ -330,6 +389,24 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                             const SizedBox(height: 32),
                             _SectionHeading(count: _records.length),
                             const SizedBox(height: 14),
+                            SearchBar(
+                              controller: _search,
+                              hintText: 'Search name or value',
+                              leading: const Icon(Icons.search_rounded),
+                              elevation: const WidgetStatePropertyAll<double>(
+                                0,
+                              ),
+                              onChanged: (_) => setState(() {}),
+                              trailing: <Widget>[
+                                if (_search.text.isNotEmpty)
+                                  IconButton(
+                                    tooltip: 'Clear search',
+                                    onPressed: () => setState(_search.clear),
+                                    icon: const Icon(Icons.close_rounded),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
                             _RecordFilterBar(
                               selected: _filter,
                               onSelected: (filter) {
@@ -347,6 +424,11 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                                 enabled: !_writing,
                                 onEdit: _edit,
                                 onDelete: _delete,
+                                // Round-tripping through the API JSON drops the
+                                // id, so the editor saves it as a new record.
+                                onDuplicate: (record) => _edit(
+                                  DnsRecord.fromJson(record.toCloudflareJson()),
+                                ),
                               ),
                             ),
                           ],
@@ -378,6 +460,60 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
             left: 0,
             right: 0,
             child: LinearProgressIndicator(),
+          ),
+      ],
+    );
+  }
+}
+
+class _ResolverComparisonSheet extends StatelessWidget {
+  const _ResolverComparisonSheet({required this.comparisons});
+
+  final List<DnsResolverComparison> comparisons;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final differing = comparisons.where((c) => !c.consistent).length;
+    return ListView(
+      shrinkWrap: true,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      children: <Widget>[
+        Text(
+          'Resolver comparison',
+          style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          differing == 0
+              ? 'Cloudflare and Google return the same answers.'
+              : '$differing of ${comparisons.length} records differ between '
+                    'resolvers.',
+          style: textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
+        ),
+        const SizedBox(height: 12),
+        for (final comparison in comparisons)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              comparison.consistent
+                  ? Icons.check_circle_rounded
+                  : Icons.warning_amber_rounded,
+              color: comparison.consistent ? colors.primary : colors.error,
+            ),
+            title: Text('${comparison.type.wireName} ${comparison.name}'),
+            subtitle: Text(
+              <String>[
+                for (final entry in comparison.answers.entries)
+                  '${entry.key}: ${comparison.failedResolvers.contains(entry.key)
+                      ? 'lookup failed'
+                      : entry.value.isEmpty
+                      ? 'no answer'
+                      : entry.value.map((r) => r.content).join(', ')}',
+              ].join('\n'),
+            ),
+            isThreeLine: comparison.answers.length > 1,
           ),
       ],
     );

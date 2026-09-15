@@ -60,3 +60,39 @@ class DnsHealthReport {
   int get errorCount =>
       issues.where((issue) => issue.severity == DnsIssueSeverity.error).length;
 }
+
+/// Answers for one record from several public resolvers.
+class DnsResolverComparison {
+  /// Creates a comparison.
+  const DnsResolverComparison({
+    required this.name,
+    required this.type,
+    required this.answers,
+    this.failedResolvers = const <String>{},
+  });
+
+  /// Queried DNS name.
+  final String name;
+
+  /// Queried DNS type.
+  final DnsRecordType type;
+
+  /// Answers keyed by resolver label, such as `Cloudflare` or `Google`.
+  final Map<String, List<DnsRecord>> answers;
+
+  /// Labels of resolvers whose lookup failed.
+  final Set<String> failedResolvers;
+
+  /// Whether every resolver answered and all answers match.
+  bool get consistent {
+    if (failedResolvers.isNotEmpty) return false;
+    final contents = answers.values
+        .map((records) => records.map((r) => r.canonicalContent).toSet())
+        .toList(growable: false);
+    return contents.every(
+      (set) =>
+          set.length == contents.first.length &&
+          set.containsAll(contents.first),
+    );
+  }
+}

@@ -101,6 +101,29 @@ class DemoDiagnostics extends DnsDiagnostics {
       issues: const <DnsIssue>[],
     );
   }
+
+  @override
+  Future<List<DnsResolverComparison>> compareResolvers(
+    Iterable<DnsRecord> records, {
+    Map<String, Uri>? resolvers,
+  }) async {
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    final list = records.toList(growable: false);
+    return <DnsResolverComparison>[
+      for (var i = 0; i < list.length; i++)
+        DnsResolverComparison(
+          name: list[i].name,
+          type: list[i].type,
+          answers: <String, List<DnsRecord>>{
+            'Cloudflare': <DnsRecord>[list[i]],
+            // The last record simulates a change Google has not seen yet.
+            'Google': i == list.length - 1
+                ? const <DnsRecord>[]
+                : <DnsRecord>[list[i]],
+          },
+        ),
+    ];
+  }
 }
 
 /// In-memory gateway so the example is safe to run without a Cloudflare token.

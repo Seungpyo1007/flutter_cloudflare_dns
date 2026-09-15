@@ -263,7 +263,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _EditorHeader(
-              title: widget.initialRecord == null
+              title: widget.initialRecord?.id == null
                   ? 'New DNS record'
                   : 'Edit DNS record',
               zoneName: widget.zoneName,
@@ -289,7 +289,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
               selectedFactor: 2.15,
               motion: motion,
               semanticsSuffix: 'record type',
-              onSelected: widget.initialRecord == null ? _selectType : null,
+              onSelected: widget.initialRecord?.id == null ? _selectType : null,
             ),
             const SizedBox(height: 22),
             _sectionTitle(context, 'Name'),
