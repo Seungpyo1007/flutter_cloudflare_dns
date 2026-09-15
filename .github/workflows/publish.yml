@@ -1,0 +1,23 @@
+name: Publish to pub.dev
+
+on:
+  push:
+    tags:
+      # Must match the tag pattern configured on pub.dev: v{{version}}
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for pub.dev, no stored secret
+    steps:
+      - uses: actions/checkout@v4
+      # Configures the pub.dev OIDC credential; the Dart-only reusable
+      # workflow cannot build a Flutter package, so Flutter is added below.
+      - uses: dart-lang/setup-dart@v1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter pub publish --force

@@ -10,9 +10,17 @@ class DnsDiagnostics {
   /// Creates a diagnostics client.
   DnsDiagnostics({http.Client? client, Uri? endpoint})
     : _client = client ?? http.Client(),
+      _ownsClient = client == null,
       endpoint = endpoint ?? Uri.parse('https://cloudflare-dns.com/dns-query');
 
   final http.Client _client;
+  final bool _ownsClient;
+
+  /// Closes the HTTP client this instance created. An injected client is left
+  /// open for its owner.
+  void close() {
+    if (_ownsClient) _client.close();
+  }
 
   /// DNS-over-HTTPS JSON endpoint.
   final Uri endpoint;

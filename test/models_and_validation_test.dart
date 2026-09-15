@@ -278,5 +278,35 @@ void main() {
         <String>['invalid_tag', 'invalid_target'],
       );
     });
+
+    test('enforces Cloudflare comment and tag limits', () {
+      List<String> codes({String? comment, List<String> tags = const []}) =>
+          DnsRecordValidator.validate(
+            DnsRecord(
+              type: DnsRecordType.a,
+              name: 'example.com',
+              content: '192.0.2.1',
+              comment: comment,
+              tags: tags,
+            ),
+          ).map((issue) => issue.code).toList();
+
+      expect(codes(comment: 'x' * 500, tags: ['env:prod', 'owner']), isEmpty);
+      expect(codes(comment: 'x' * 501), <String>['comment_too_long']);
+      expect(codes(tags: ['bad name:x']), <String>['invalid_tag']);
+      expect(codes(tags: ['env:${'v' * 101}']), <String>['invalid_tag']);
+      expect(codes(tags: [for (var i = 0; i < 21; i++) 't$i']), <String>[
+        'too_many_tags',
+      ]);
+      expect(
+        const DnsRecord(
+          type: DnsRecordType.a,
+          name: 'example.com',
+          content: '192.0.2.1',
+          comment: '',
+        ).toCloudflareJson()['comment'],
+        '',
+      );
+    });
   });
 }

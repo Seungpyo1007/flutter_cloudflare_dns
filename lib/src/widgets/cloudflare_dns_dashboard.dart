@@ -49,12 +49,21 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   String? _error;
   String? _healthError;
 
-  DnsDiagnostics get _diagnostics => widget.diagnostics ?? DnsDiagnostics();
+  DnsDiagnostics? _ownedDiagnostics;
+
+  DnsDiagnostics get _diagnostics =>
+      widget.diagnostics ?? (_ownedDiagnostics ??= DnsDiagnostics());
 
   @override
   void initState() {
     super.initState();
     _loadZones();
+  }
+
+  @override
+  void dispose() {
+    _ownedDiagnostics?.close();
+    super.dispose();
   }
 
   Future<void> _loadZones() async {

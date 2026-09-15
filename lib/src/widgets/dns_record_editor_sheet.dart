@@ -56,6 +56,8 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
   late final TextEditingController _target;
   late final TextEditingController _caaFlags;
   late final TextEditingController _caaValue;
+  late final TextEditingController _comment;
+  late final TextEditingController _tags;
   late String _caaTag;
   late bool _proxied;
   late bool _ttlCustom;
@@ -75,6 +77,8 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     _target = TextEditingController(text: record?.target ?? '');
     _caaFlags = TextEditingController(text: '${record?.caaFlags ?? 0}');
     _caaValue = TextEditingController(text: record?.caaValue ?? '');
+    _comment = TextEditingController(text: record?.comment ?? '');
+    _tags = TextEditingController(text: record?.tags.join(', ') ?? '');
     _caaTag = record?.caaTag ?? caaPropertyTags.first;
     _proxied = record?.proxied ?? false;
     _ttlCustom = !_presetTtls.contains(record?.ttl ?? 1);
@@ -92,6 +96,8 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       _target,
       _caaFlags,
       _caaValue,
+      _comment,
+      _tags,
     ]) {
       controller.dispose();
     }
@@ -102,7 +108,16 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     final ttl = int.tryParse(_ttl.text) ?? 1;
     final initial = widget.initialRecord;
     final name = _name.text.trim();
-    final tags = initial?.tags ?? const <String>[];
+    final commentText = _comment.text.trim();
+    // An emptied comment is sent as '' so PATCH-based proxies clear it too.
+    final comment = commentText.isEmpty && initial?.comment == null
+        ? null
+        : commentText;
+    final tags = _tags.text
+        .split(',')
+        .map((tag) => tag.trim())
+        .where((tag) => tag.isNotEmpty)
+        .toList(growable: false);
     switch (_type) {
       case DnsRecordType.srv:
         return DnsRecord.srv(
@@ -113,7 +128,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           port: int.tryParse(_port.text) ?? -1,
           target: _target.text.trim(),
           ttl: ttl,
-          comment: initial?.comment,
+          comment: comment,
           tags: tags,
         );
       case DnsRecordType.mx:
@@ -123,7 +138,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           priority: int.tryParse(_priority.text) ?? -1,
           mailServer: _content.text.trim(),
           ttl: ttl,
-          comment: initial?.comment,
+          comment: comment,
           tags: tags,
         );
       case DnsRecordType.caa:
@@ -134,7 +149,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           tag: _caaTag,
           value: _caaValue.text.trim(),
           ttl: ttl,
-          comment: initial?.comment,
+          comment: comment,
           tags: tags,
         );
       case DnsRecordType.a ||
@@ -149,7 +164,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           content: _content.text.trim(),
           ttl: ttl,
           proxied: _supportsProxy ? _proxied : false,
-          comment: initial?.comment,
+          comment: comment,
           tags: tags,
         );
     }
@@ -467,6 +482,25 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
                     : const SizedBox.shrink(
                         key: ValueKey<String>('no-proxy-setting'),
                       ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _sectionTitle(context, 'Comment'),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _comment,
+              decoration: const InputDecoration(
+                hintText: 'Optional note for your team',
+              ),
+            ),
+            const SizedBox(height: 18),
+            _sectionTitle(context, 'Tags'),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _tags,
+              decoration: const InputDecoration(
+                hintText: 'env:prod, owner:web',
+                helperText: 'Comma-separated name:value. Pro plan and above.',
               ),
             ),
             const SizedBox(height: 22),
