@@ -211,6 +211,18 @@ cd example
 flutter run -d chrome   # or android, ios, windows, macos, linux
 ```
 
+## Related packages
+
+Pure Dart companions from the same publisher for checks beyond DNS records.
+They run on every platform this package supports (`tls_inspector` excludes
+the web):
+
+| Package | What it checks |
+| --- | --- |
+| [rdap](https://pub.dev/packages/rdap) | Domain registration: expiry date, registrar, nameservers |
+| [mail_dns_check](https://pub.dev/packages/mail_dns_check) | Email DNS: SPF, DMARC, DKIM, and MX |
+| [tls_inspector](https://pub.dev/packages/tls_inspector) | TLS certificates: issuer, expiry, covered names, trust |
+
 ## Security and support
 
 - Tokens are supplied per request and are never included in exception messages.
