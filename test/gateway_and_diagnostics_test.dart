@@ -374,5 +374,97 @@ void main() {
       expect(report.answers['example.com|CAA']!.single.caaTag, 'issue');
       expect(report.answers['example.com|NS']!.single.type, DnsRecordType.ns);
     });
+
+    test('compareResolvers flags differing and failed resolvers', () async {
+      final client = MockClient((request) async {
+        final name = request.url.queryParameters['name'];
+        if (request.url.host == 'dns.google' && name == 'down.example.com') {
+          return http.Response('unavailable', 500);
+        }
+        final data =
+            request.url.host == 'dns.google' && name == 'new.example.com'
+            ? '192.0.2.9'
+            : '192.0.2.1';
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'Status': 0,
+            'Answer': <Object?>[
+              <String, Object?>{
+                'name': '$name.',
+                'type': 1,
+                'TTL': 60,
+                'data': data,
+              },
+            ],
+          }),
+          200,
+        );
+      });
+
+      final comparisons = await DnsDiagnostics(client: client).compareResolvers(
+        <DnsRecord>[
+          for (final host in <String>[
+            'same.example.com',
+            'new.example.com',
+            'down.example.com',
+            'same.example.com',
+          ])
+            DnsRecord(type: DnsRecordType.a, name: host, content: '192.0.2.1'),
+        ],
+      );
+
+      expect(comparisons.map((c) => c.name), <String>[
+        'same.example.com',
+        'new.example.com',
+        'down.example.com',
+      ]);
+      expect(comparisons.map((c) => c.consistent), <bool>[true, false, false]);
+      expect(comparisons[1].answers['Google']!.single.content, '192.0.2.9');
+      expect(comparisons.last.failedResolvers, <String>{'Google'});
+    });
+  });
+
+  group('HTTP 429', () {
+    ProxyCloudflareGateway gatewayWith(MockClient client) =>
+        ProxyCloudflareGateway(
+          baseUri: Uri.parse('https://backend.example'),
+          client: client,
+        );
+
+    test('retries after Retry-After and then succeeds', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return calls == 1
+            ? http.Response(
+                '{"message":"Rate limited"}',
+                429,
+                headers: <String, String>{'retry-after': '0'},
+              )
+            : http.Response('[{"id":"zone-1","name":"example.com"}]', 200);
+      });
+
+      expect((await gatewayWith(client).listZones()).single.id, 'zone-1');
+      expect(calls, 2);
+    });
+
+    test('gives up after the maximum retries', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return http.Response(
+          '{"message":"Rate limited"}',
+          429,
+          headers: <String, String>{'retry-after': '0'},
+        );
+      });
+
+      await expectLater(
+        gatewayWith(client).listZones(),
+        throwsA(isA<CloudflareDnsException>()),
+      );
+      // One initial request plus three retries.
+      expect(calls, 4);
+    });
   });
 }

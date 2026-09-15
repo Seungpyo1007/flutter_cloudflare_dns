@@ -26,7 +26,65 @@ class DnsDiagnostics {
   final Uri endpoint;
 
   /// Resolves [name] for one supported [type].
-  Future<List<DnsRecord>> lookup(String name, DnsRecordType type) async {
+  Future<List<DnsRecord>> lookup(String name, DnsRecordType type) =>
+      _lookupAt(endpoint, name, type);
+
+  /// Public DNS-over-HTTPS JSON resolvers used by [compareResolvers].
+  static final Map<String, Uri> publicResolvers = <String, Uri>{
+    'Cloudflare': Uri.parse('https://cloudflare-dns.com/dns-query'),
+    'Google': Uri.parse('https://dns.google/resolve'),
+  };
+
+  /// Looks up every distinct name and type in [records] on each resolver.
+  ///
+  /// Use it to see whether a change has propagated: a comparison is
+  /// [DnsResolverComparison.consistent] only when every resolver answered
+  /// with the same records. Defaults to [publicResolvers].
+  Future<List<DnsResolverComparison>> compareResolvers(
+    Iterable<DnsRecord> records, {
+    Map<String, Uri>? resolvers,
+  }) {
+    final targets = <String, ({String name, DnsRecordType type})>{
+      for (final record in records)
+        '${record.name}|${record.type.wireName}': (
+          name: record.name,
+          type: record.type,
+        ),
+    };
+    final endpoints = resolvers ?? publicResolvers;
+    return Future.wait(
+      targets.values.map((target) async {
+        final answers = <String, List<DnsRecord>>{};
+        final failed = <String>{};
+        await Future.wait(
+          endpoints.entries.map((resolver) async {
+            try {
+              answers[resolver.key] = await _lookupAt(
+                resolver.value,
+                target.name,
+                target.type,
+              );
+            } on Object {
+              answers[resolver.key] = const <DnsRecord>[];
+              failed.add(resolver.key);
+            }
+          }),
+        );
+        return DnsResolverComparison(
+          name: target.name,
+          type: target.type,
+          answers: answers,
+          failedResolvers: failed,
+        );
+      }),
+    );
+  }
+
+  Future<List<DnsRecord>> _lookupAt(
+    Uri endpoint,
+    String name,
+    DnsRecordType type,
+  ) async {
     final uri = endpoint.replace(
       queryParameters: <String, String>{'name': name, 'type': type.wireName},
     );

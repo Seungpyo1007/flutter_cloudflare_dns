@@ -1,3 +1,14 @@
+## 0.1.2
+
+* Search records by name or value from the dashboard.
+* Compare public answers from Cloudflare and Google DNS-over-HTTPS resolvers
+  with `DnsDiagnostics.compareResolvers` and the dashboard's
+  "Compare resolvers" sheet to see whether a change has propagated.
+* Copy a record value or duplicate a record from the record menu. The editor
+  treats a record without an `id` as a new record.
+* Retry Cloudflare API requests that return HTTP 429, honoring `Retry-After`.
+* Replace the `minecraft` pub.dev topic with `material-design` and `ui`.
+
 ## 0.1.1
 
 * Fix `CloudflareDnsDashboard` creating a new HTTP client for every health

@@ -30,21 +30,36 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
   /// HTTP client used for every request.
   final http.Client client;
 
+  /// Retries [send] makes after an HTTP 429 response.
+  static const int maxRetries = 3;
+
   /// Sends a JSON request and buffers the full response.
+  ///
+  /// HTTP 429 responses are retried up to [maxRetries] times, waiting for the
+  /// `Retry-After` seconds (at most 60) or 1, 2, then 4 seconds.
   Future<http.Response> send(
     String method,
     Uri uri, {
     Map<String, String>? headers,
     Object? body,
-  }) {
-    final request = http.Request(method, uri)
-      ..headers.addAll(<String, String>{
-        'accept': 'application/json',
-        if (body != null) 'content-type': 'application/json',
-        ...?headers,
-      });
-    if (body != null) request.body = jsonEncode(body);
-    return client.send(request).then(http.Response.fromStream);
+  }) async {
+    for (var attempt = 0; ; attempt++) {
+      // A sent request cannot be re-sent, so build a new one per attempt.
+      final request = http.Request(method, uri)
+        ..headers.addAll(<String, String>{
+          'accept': 'application/json',
+          if (body != null) 'content-type': 'application/json',
+          ...?headers,
+        });
+      if (body != null) request.body = jsonEncode(body);
+      final response = await http.Response.fromStream(
+        await client.send(request),
+      );
+      if (response.statusCode != 429 || attempt >= maxRetries) return response;
+      final retryAfter = int.tryParse(response.headers['retry-after'] ?? '');
+      final seconds = (retryAfter ?? 1 << attempt).clamp(0, 60).toInt();
+      await Future<void>.delayed(Duration(seconds: seconds));
+    }
   }
 
   /// Decodes [response], throwing [CloudflareDnsException] on failure.

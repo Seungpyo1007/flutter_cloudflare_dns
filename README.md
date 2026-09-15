@@ -45,12 +45,15 @@ type picker, SRV fields, TTL presets, and live record preview. You can also
 - Edit SRV priority, weight, port, and target fields for Minecraft and other
   services, MX mail routing, and CAA certificate authority policies.
 - Edit Cloudflare record comments and tags (tags need a Pro plan or above).
+- Search records by name or value, copy values, and duplicate records.
+- Compare Cloudflare and Google public DNS answers to check propagation.
+- Retry rate-limited (HTTP 429) Cloudflare API requests automatically.
 
 ## Installation
 
 ```yaml
 dependencies:
-  flutter_cloudflare_dns: ^0.1.1
+  flutter_cloudflare_dns: ^0.1.2
 ```
 
 The package requires Dart 3.12 and Flutter 3.44 or newer.
@@ -148,6 +151,17 @@ for (final issue in report.issues) {
 
 `DnsHealthReport.answers` is keyed by `name|TYPE`, for example
 `_minecraft._tcp.example.com|SRV`.
+
+To check whether a change has reached other public resolvers, compare
+Cloudflare and Google answers:
+
+```dart
+final comparisons = await DnsDiagnostics().compareResolvers([expected]);
+for (final comparison in comparisons) {
+  final state = comparison.consistent ? 'consistent' : 'differs';
+  print('${comparison.name} ${comparison.type.wireName}: $state');
+}
+```
 
 ## Minecraft Java SRV record
 

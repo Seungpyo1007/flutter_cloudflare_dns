@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/dns_record.dart';
 
@@ -10,6 +11,7 @@ class DnsRecordList extends StatelessWidget {
     required this.records,
     this.onEdit,
     this.onDelete,
+    this.onDuplicate,
     this.enabled = true,
   });
 
@@ -21,6 +23,9 @@ class DnsRecordList extends StatelessWidget {
 
   /// Delete callback.
   final ValueChanged<DnsRecord>? onDelete;
+
+  /// Duplicate callback. The menu item is disabled when null.
+  final ValueChanged<DnsRecord>? onDuplicate;
 
   /// Whether actions are enabled.
   final bool enabled;
@@ -62,6 +67,7 @@ class DnsRecordList extends StatelessWidget {
               enabled: enabled,
               onEdit: onEdit,
               onDelete: onDelete,
+              onDuplicate: onDuplicate,
             ),
             if (index != records.length - 1)
               const Divider(height: 1, indent: 82, endIndent: 18),
@@ -78,12 +84,14 @@ class _DnsRecordTile extends StatelessWidget {
     required this.enabled,
     required this.onEdit,
     required this.onDelete,
+    required this.onDuplicate,
   });
 
   final DnsRecord record;
   final bool enabled;
   final ValueChanged<DnsRecord>? onEdit;
   final ValueChanged<DnsRecord>? onDelete;
+  final ValueChanged<DnsRecord>? onDuplicate;
 
   @override
   Widget build(BuildContext context) {
@@ -207,6 +215,25 @@ class _DnsRecordTile extends StatelessWidget {
                   onPressed: onEdit == null ? null : () => onEdit!(record),
                   leadingIcon: const Icon(Icons.edit_outlined),
                   child: const Text('Edit'),
+                ),
+                MenuItemButton(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: record.content));
+                    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                      const SnackBar(content: Text('Record value copied')),
+                    );
+                  },
+                  leadingIcon: const Icon(Icons.content_copy_rounded),
+                  child: const Text('Copy value'),
+                ),
+                MenuItemButton(
+                  onPressed: onDuplicate == null
+                      ? null
+                      : () => onDuplicate!(record),
+                  leadingIcon: const Icon(
+                    Icons.control_point_duplicate_rounded,
+                  ),
+                  child: const Text('Duplicate'),
                 ),
                 MenuItemButton(
                   onPressed: onDelete == null ? null : () => onDelete!(record),
