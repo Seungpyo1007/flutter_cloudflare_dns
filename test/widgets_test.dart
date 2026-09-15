@@ -324,6 +324,54 @@ void main() {
     expect(find.text('team:mail'), findsOneWidget);
     expect(find.text('issue letsencrypt.org'), findsOneWidget);
   });
+
+  testWidgets('record editor edits comment and tags', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DnsRecord? saved;
+    await tester.pumpWidget(
+      _app(
+        Builder(
+          builder: (context) => Center(
+            child: FilledButton(
+              onPressed: () async {
+                saved = await DnsRecordEditorSheet.show(
+                  context,
+                  zoneName: 'example.com',
+                  initialRecord: const DnsRecord(
+                    id: 'a-1',
+                    type: DnsRecordType.a,
+                    name: 'example.com',
+                    content: '192.0.2.1',
+                    comment: 'old note',
+                    tags: <String>['env:dev'],
+                  ),
+                );
+              },
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open editor'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextFormField, 'old note'), '');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'env:dev'),
+      'env:prod, owner:web',
+    );
+    await tester.ensureVisible(find.text('Save record'));
+    await tester.tap(find.text('Save record'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.comment, '');
+    expect(saved?.tags, <String>['env:prod', 'owner:web']);
+  });
 }
 
 Widget _app(Widget child) => MaterialApp(

@@ -33,8 +33,20 @@ abstract final class DnsRecordValidator {
     if (record.ttl != 1 && record.ttl < 60) {
       add('invalid_ttl', 'TTL must be automatic (1) or at least 60 seconds.');
     }
-    if (record.tags.any((tag) => tag.trim().isEmpty)) {
-      add('invalid_tag', 'Record tags cannot be empty.');
+    // Cloudflare limits: 20 tags, names of letters/digits/-/_ up to 32
+    // characters, values up to 100, comments up to 500 (100 on Free).
+    if (record.tags.length > 20) {
+      add('too_many_tags', 'A record can have at most 20 tags.');
+    }
+    if (!record.tags.every(_validTag)) {
+      add(
+        'invalid_tag',
+        'Use tags like name or name:value (name up to 32 letters, digits, '
+            '- or _; value up to 100 characters).',
+      );
+    }
+    if ((record.comment?.length ?? 0) > 500) {
+      add('comment_too_long', 'Comments can be at most 500 characters.');
     }
 
     switch (record.type) {
@@ -97,6 +109,14 @@ abstract final class DnsRecordValidator {
   static void validateOrThrow(DnsRecord record) {
     final issues = validate(record);
     if (issues.isNotEmpty) throw DnsValidationException(issues);
+  }
+
+  static bool _validTag(String tag) {
+    final colon = tag.indexOf(':');
+    final name = colon < 0 ? tag : tag.substring(0, colon);
+    final value = colon < 0 ? '' : tag.substring(colon + 1);
+    return RegExp(r'^[A-Za-z0-9_-]{1,32}$').hasMatch(name) &&
+        value.length <= 100;
   }
 
   static bool _inRange(int? value, int min, int max) =>

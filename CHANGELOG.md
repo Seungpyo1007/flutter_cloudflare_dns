@@ -1,3 +1,16 @@
+## 0.1.1
+
+* Fix `CloudflareDnsDashboard` creating a new HTTP client for every health
+  check without closing it. It now reuses one and closes it on dispose.
+* Add `close()` to `DnsDiagnostics`, `DirectCloudflareGateway`, and
+  `ProxyCloudflareGateway`. Only clients they created are closed.
+* Edit record comments and tags in the editor sheet. Clearing a comment now
+  sends an empty value so proxies using PATCH remove it.
+* Validate Cloudflare limits: comments up to 500 characters, up to 20 tags,
+  tag names of letters, digits, `-`, or `_` up to 32 characters, values up
+  to 100 characters.
+* Publish releases to pub.dev from GitHub Actions when a `v*` tag is pushed.
+
 ## 0.1.0
 
 **Breaking:** `DnsRecordType` gains `mx`, `caa`, and `ns`. Exhaustive `switch`

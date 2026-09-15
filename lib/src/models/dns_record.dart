@@ -277,7 +277,8 @@ class DnsRecord {
       'type': type.wireName,
       'name': name,
       'ttl': ttl,
-      if (comment != null && comment!.isNotEmpty) 'comment': comment,
+      // An empty comment is sent on purpose: it clears the comment on PATCH.
+      if (comment != null) 'comment': comment,
       if (tags.isNotEmpty) 'tags': tags,
     };
     switch (type) {

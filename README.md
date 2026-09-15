@@ -44,13 +44,13 @@ type picker, SRV fields, TTL presets, and live record preview. You can also
   surfaces, record filters, a floating create action, and a mobile editor sheet.
 - Edit SRV priority, weight, port, and target fields for Minecraft and other
   services, MX mail routing, and CAA certificate authority policies.
-- Keep Cloudflare record comments and tags intact when editing.
+- Edit Cloudflare record comments and tags (tags need a Pro plan or above).
 
 ## Installation
 
 ```yaml
 dependencies:
-  flutter_cloudflare_dns: ^0.1.0
+  flutter_cloudflare_dns: ^0.1.1
 ```
 
 The package requires Dart 3.12 and Flutter 3.44 or newer.
@@ -117,6 +117,10 @@ Create a scoped Cloudflare API token with only **Zone: Read** and
 **DNS: Edit** for the zones the tool manages. Do not use the Global API Key.
 Direct access does not work in Flutter web builds because the Cloudflare API
 does not allow cross-origin browser requests.
+
+Call `close()` on gateways and `DnsDiagnostics` instances you create when you
+no longer need them. Clients you pass in stay open for you to close. The
+dashboard closes only the diagnostics client it creates itself.
 
 ## Public DNS diagnostics
 

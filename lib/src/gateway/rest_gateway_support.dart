@@ -10,7 +10,18 @@ import 'cloudflare_dns_gateway.dart';
 /// Shared JSON transport for REST-based [CloudflareDnsGateway]s.
 abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
   /// Creates a gateway that sends requests through [client].
-  RestCloudflareDnsGateway({required this.client});
+  ///
+  /// Set [ownsClient] when the gateway created [client], so [close] releases it.
+  RestCloudflareDnsGateway({required this.client, this.ownsClient = false});
+
+  /// Whether [close] releases [client], because this gateway created it.
+  final bool ownsClient;
+
+  /// Closes the HTTP client this gateway created. An injected client is left
+  /// open for its owner.
+  void close() {
+    if (ownsClient) client.close();
+  }
 
   /// Upper bound on pages read by [fetchAllPages], guarding against a
   /// misbehaving server that never reports its last page.
