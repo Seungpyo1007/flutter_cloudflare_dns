@@ -1,13 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../diagnostics/dns_diagnostics.dart';
 import '../gateway/cloudflare_dns_gateway.dart';
 import '../models/dns_health.dart';
 import '../models/dns_record.dart';
 import '../models/dns_zone.dart';
+import '../models/dns_zone_file.dart';
 import 'dns_record_editor_sheet.dart';
 import 'dns_record_list.dart';
 import 'dns_sync_status_icon.dart';
+import 'dns_zone_import_sheet.dart';
 import 'domain_health_card.dart';
 
 /// Ready-to-use Material 3 dashboard for Cloudflare DNS.
@@ -19,6 +24,8 @@ class CloudflareDnsDashboard extends StatefulWidget {
     this.diagnostics,
     this.initialZoneName,
     this.padding = const EdgeInsets.fromLTRB(20, 8, 20, 120),
+    this.propagationCheckInterval = const Duration(seconds: 15),
+    this.propagationTimeout = const Duration(minutes: 10),
   });
 
   /// DNS gateway used for records and mutations.
@@ -32,6 +39,13 @@ class CloudflareDnsDashboard extends StatefulWidget {
 
   /// Dashboard content padding.
   final EdgeInsetsGeometry padding;
+
+  /// How often a saved record is looked up on public resolvers until every
+  /// resolver returns it.
+  final Duration propagationCheckInterval;
+
+  /// How long a saved record is watched before it shows as not propagated.
+  final Duration propagationTimeout;
 
   @override
   State<CloudflareDnsDashboard> createState() => _CloudflareDnsDashboardState();
@@ -50,6 +64,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   bool _checking = false;
   String? _error;
   String? _healthError;
+  final _propagation = <String, DnsPropagationStatus>{};
+  final _watches = <String, StreamSubscription<DnsResolverComparison>>{};
 
   DnsDiagnostics? _ownedDiagnostics;
 
@@ -64,6 +80,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
 
   @override
   void dispose() {
+    _stopWatches();
     _ownedDiagnostics?.close();
     _search.dispose();
     super.dispose();
@@ -180,8 +197,10 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       ),
     );
     if (selected == null || selected == _selectedZone || !mounted) return;
+    _stopWatches();
     setState(() {
       _selectedZone = selected;
+      _propagation.clear();
       _filter = _RecordFilter.all;
       _search.clear();
       _report = null;
@@ -200,11 +219,10 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     if (record == null || !mounted) return;
     setState(() => _writing = true);
     try {
-      if (initial?.id == null) {
-        await widget.gateway.createRecord(zone.id, record);
-      } else {
-        await widget.gateway.updateRecord(zone.id, initial!.id!, record);
-      }
+      final saved = initial?.id == null
+          ? await widget.gateway.createRecord(zone.id, record)
+          : await widget.gateway.updateRecord(zone.id, initial!.id!, record);
+      _watchPropagation(saved, zone);
       await _loadRecords();
     } on Object catch (error) {
       if (mounted) _showError(error);
@@ -246,6 +264,117 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     } finally {
       if (mounted) setState(() => _writing = false);
     }
+  }
+
+  /// Polls public resolvers for [record] and tracks it in [_propagation].
+  void _watchPropagation(DnsRecord record, DnsZone zone) {
+    // Proxied records answer with Cloudflare's addresses, never their own.
+    if (record.proxied == true || !mounted) return;
+    final key = dnsPropagationKey(record);
+    _watches.remove(key)?.cancel();
+    final name = record.name.trim();
+    final fqdn = name.isEmpty || name == '@'
+        ? zone.name
+        : name == zone.name || name.endsWith('.${zone.name}')
+        ? name
+        : '$name.${zone.name}';
+    final watched = record.copyWith(name: fqdn);
+    setState(() => _propagation[key] = DnsPropagationStatus.propagating);
+    _watches[key] = _diagnostics
+        .watchPropagation(
+          watched,
+          interval: widget.propagationCheckInterval,
+          timeout: widget.propagationTimeout,
+        )
+        .listen(
+          (comparison) {
+            if (mounted && comparison.matches(watched)) {
+              setState(
+                () => _propagation[key] = DnsPropagationStatus.propagated,
+              );
+            }
+          },
+          onError: (Object _) {},
+          onDone: () {
+            _watches.remove(key);
+            if (mounted &&
+                _propagation[key] == DnsPropagationStatus.propagating) {
+              setState(() => _propagation[key] = DnsPropagationStatus.timedOut);
+            }
+          },
+        );
+  }
+
+  void _stopWatches() {
+    for (final watch in _watches.values) {
+      watch.cancel();
+    }
+    _watches.clear();
+  }
+
+  Future<void> _exportZone() async {
+    final zone = _selectedZone;
+    if (zone == null) return;
+    await Clipboard.setData(
+      ClipboardData(text: DnsZoneFile.encode(_records, origin: zone.name)),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Zone file with ${_records.length} records copied'),
+      ),
+    );
+  }
+
+  Future<void> _importZone() async {
+    final zone = _selectedZone;
+    if (zone == null || _writing) return;
+    final records = await DnsZoneImportSheet.show(
+      context,
+      zoneName: zone.name,
+      existingRecords: _records,
+    );
+    if (records == null || records.isEmpty || !mounted) return;
+    setState(() => _writing = true);
+    final gateway = widget.gateway;
+    var imported = 0;
+    Object? firstError;
+    try {
+      if (gateway is BatchCapableGateway) {
+        // One atomic request: either every record is created or none is.
+        try {
+          imported = (await gateway.batch(
+            zone.id,
+            posts: records,
+          )).posts.length;
+        } on Object catch (error) {
+          firstError = error;
+        }
+      } else {
+        for (final record in records) {
+          try {
+            await gateway.createRecord(zone.id, record);
+            imported++;
+          } on Object catch (error) {
+            firstError ??= error;
+          }
+        }
+      }
+      if (imported > 0) await _loadRecords();
+    } finally {
+      if (mounted) setState(() => _writing = false);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          firstError == null
+              ? 'Imported $imported records'
+              : 'Imported $imported of ${records.length} records. '
+                    '${_safeMessage(firstError)}',
+        ),
+      ),
+    );
   }
 
   Future<void> _compareResolvers() async {
@@ -318,6 +447,30 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                   leading: const Center(child: _CloudflareMark()),
                   title: const Text('DNS'),
                   actions: <Widget>[
+                    MenuAnchor(
+                      builder: (context, controller, child) => IconButton(
+                        tooltip: 'Zone file',
+                        onPressed: _selectedZone == null || _writing
+                            ? null
+                            : () => controller.isOpen
+                                  ? controller.close()
+                                  : controller.open(),
+                        icon: const Icon(Icons.description_outlined),
+                      ),
+                      menuChildren: <Widget>[
+                        MenuItemButton(
+                          onPressed: _records.isEmpty ? null : _exportZone,
+                          leadingIcon: const Icon(Icons.content_copy_rounded),
+                          child: const Text('Export zone file'),
+                        ),
+                        MenuItemButton(
+                          onPressed: _importZone,
+                          leadingIcon: const Icon(Icons.upload_file_rounded),
+                          child: const Text('Import zone file'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 4),
                     IconButton.filledTonal(
                       tooltip: 'Refresh records',
                       onPressed: _loading ? null : _loadRecords,
@@ -422,6 +575,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                                 key: ValueKey<_RecordFilter>(_filter),
                                 records: visibleRecords,
                                 enabled: !_writing,
+                                propagation: Map.unmodifiable(_propagation),
                                 onEdit: _edit,
                                 onDelete: _delete,
                                 // Round-tripping through the API JSON drops the
@@ -831,12 +985,16 @@ enum _RecordFilter {
     _RecordFilter.web =>
       record.type == DnsRecordType.a ||
           record.type == DnsRecordType.aaaa ||
-          record.type == DnsRecordType.cname,
+          record.type == DnsRecordType.cname ||
+          record.type == DnsRecordType.https ||
+          record.type == DnsRecordType.svcb,
     _RecordFilter.verification => record.type == DnsRecordType.txt,
     _RecordFilter.service => record.type == DnsRecordType.srv,
     _RecordFilter.mail => record.type == DnsRecordType.mx,
     _RecordFilter.infrastructure =>
-      record.type == DnsRecordType.ns || record.type == DnsRecordType.caa,
+      record.type == DnsRecordType.ns ||
+          record.type == DnsRecordType.caa ||
+          record.type == DnsRecordType.ptr,
   };
 }
 

@@ -95,4 +95,15 @@ class DnsResolverComparison {
           set.containsAll(contents.first),
     );
   }
+
+  /// Whether every resolver answered with [record]'s content, so a change to
+  /// [record] has propagated.
+  bool matches(DnsRecord record) =>
+      consistent &&
+      answers.isNotEmpty &&
+      answers.values.every(
+        (records) => records.any(
+          (answer) => answer.canonicalContent == record.canonicalContent,
+        ),
+      );
 }

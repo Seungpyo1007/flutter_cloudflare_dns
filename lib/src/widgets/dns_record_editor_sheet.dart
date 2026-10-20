@@ -56,6 +56,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
   late final TextEditingController _target;
   late final TextEditingController _caaFlags;
   late final TextEditingController _caaValue;
+  late final TextEditingController _svcParams;
   late final TextEditingController _comment;
   late final TextEditingController _tags;
   late String _caaTag;
@@ -77,6 +78,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     _target = TextEditingController(text: record?.target ?? '');
     _caaFlags = TextEditingController(text: '${record?.caaFlags ?? 0}');
     _caaValue = TextEditingController(text: record?.caaValue ?? '');
+    _svcParams = TextEditingController(text: record?.svcParams ?? '');
     _comment = TextEditingController(text: record?.comment ?? '');
     _tags = TextEditingController(text: record?.tags.join(', ') ?? '');
     _caaTag = record?.caaTag ?? caaPropertyTags.first;
@@ -96,6 +98,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       _target,
       _caaFlags,
       _caaValue,
+      _svcParams,
       _comment,
       _tags,
     ]) {
@@ -152,11 +155,34 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
           comment: comment,
           tags: tags,
         );
+      case DnsRecordType.https:
+        return DnsRecord.https(
+          id: initial?.id,
+          name: name,
+          priority: int.tryParse(_priority.text) ?? -1,
+          target: _textOr(_target, '.'),
+          params: _svcParams.text.trim(),
+          ttl: ttl,
+          comment: comment,
+          tags: tags,
+        );
+      case DnsRecordType.svcb:
+        return DnsRecord.svcb(
+          id: initial?.id,
+          name: name,
+          priority: int.tryParse(_priority.text) ?? -1,
+          target: _target.text.trim(),
+          params: _svcParams.text.trim(),
+          ttl: ttl,
+          comment: comment,
+          tags: tags,
+        );
       case DnsRecordType.a ||
           DnsRecordType.aaaa ||
           DnsRecordType.cname ||
           DnsRecordType.txt ||
-          DnsRecordType.ns:
+          DnsRecordType.ns ||
+          DnsRecordType.ptr:
         return DnsRecord(
           id: initial?.id,
           type: _type,
@@ -182,7 +208,11 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     DnsRecordType.txt => 'Verification or policy value',
     DnsRecordType.mx => 'mail.${widget.zoneName}',
     DnsRecordType.ns => 'ns1.${widget.zoneName}',
-    DnsRecordType.srv || DnsRecordType.caa => '',
+    DnsRecordType.ptr => 'host.${widget.zoneName}',
+    DnsRecordType.srv ||
+    DnsRecordType.caa ||
+    DnsRecordType.https ||
+    DnsRecordType.svcb => '',
   };
 
   String get _previewValue => switch (_type) {
@@ -192,11 +222,19 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     DnsRecordType.mx => '${_priority.text} ${_textOr(_content, _contentHint)}',
     DnsRecordType.caa =>
       '${_caaFlags.text} $_caaTag "${_textOr(_caaValue, 'letsencrypt.org')}"',
+    DnsRecordType.https =>
+      '${_priority.text} ${_textOr(_target, '.')} ${_svcParams.text.trim()}'
+          .trim(),
+    DnsRecordType.svcb =>
+      '${_priority.text} ${_textOr(_target, 'svc.${widget.zoneName}')} '
+              '${_svcParams.text.trim()}'
+          .trim(),
     DnsRecordType.a ||
     DnsRecordType.aaaa ||
     DnsRecordType.cname ||
     DnsRecordType.txt ||
-    DnsRecordType.ns => _textOr(_content, _contentHint),
+    DnsRecordType.ns ||
+    DnsRecordType.ptr => _textOr(_content, _contentHint),
   };
 
   String _textOr(TextEditingController controller, String fallback) =>
@@ -252,6 +290,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       _target,
       _caaFlags,
       _caaValue,
+      _svcParams,
     ]);
 
     return SingleChildScrollView(
@@ -635,8 +674,46 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
         ),
       ],
     ),
+    DnsRecordType.https || DnsRecordType.svcb => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _numberField(
+          context,
+          _priority,
+          'Priority',
+          hint: '1',
+          helper: '0 makes an alias to the target',
+        ),
+        const SizedBox(height: 18),
+        _sectionTitle(context, 'Target'),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _target,
+          decoration: InputDecoration(
+            hintText: _type == DnsRecordType.https
+                ? '.'
+                : 'svc.${widget.zoneName}',
+            helperText: _type == DnsRecordType.https
+                ? 'Leave empty or use . for this name'
+                : null,
+          ),
+          validator: _type == DnsRecordType.https ? null : _required,
+        ),
+        const SizedBox(height: 18),
+        _sectionTitle(context, 'Parameters'),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _svcParams,
+          decoration: const InputDecoration(
+            hintText: 'alpn="h3,h2" port=8443',
+            helperText: 'Space-separated key=value pairs',
+          ),
+        ),
+      ],
+    ),
     DnsRecordType.txt => _contentField(context, 'TXT content', multiline: true),
     DnsRecordType.ns => _contentField(context, 'Nameserver'),
+    DnsRecordType.ptr => _contentField(context, 'Target hostname'),
     DnsRecordType.a ||
     DnsRecordType.aaaa ||
     DnsRecordType.cname => _contentField(context, 'Content'),
@@ -666,6 +743,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     TextEditingController controller,
     String label, {
     required String hint,
+    String? helper,
   }) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: <Widget>[
@@ -674,7 +752,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
       TextFormField(
         controller: controller,
         keyboardType: TextInputType.number,
-        decoration: InputDecoration(hintText: hint),
+        decoration: InputDecoration(hintText: hint, helperText: helper),
         validator: _numberValidator,
       ),
     ],
@@ -696,6 +774,9 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     DnsRecordType.mx => Icons.mail_outline_rounded,
     DnsRecordType.caa => Icons.verified_user_outlined,
     DnsRecordType.ns => Icons.dns_outlined,
+    DnsRecordType.https => Icons.https_outlined,
+    DnsRecordType.svcb => Icons.settings_ethernet_rounded,
+    DnsRecordType.ptr => Icons.keyboard_return_rounded,
   };
 
   String? _numberValidator(String? value) {
@@ -1220,5 +1301,8 @@ class _EditorHeader extends StatelessWidget {
     DnsRecordType.mx => Icons.forward_to_inbox_rounded,
     DnsRecordType.caa => Icons.shield_outlined,
     DnsRecordType.ns => Icons.dns_rounded,
+    DnsRecordType.https => Icons.lock_outline_rounded,
+    DnsRecordType.svcb => Icons.settings_ethernet_rounded,
+    DnsRecordType.ptr => Icons.undo_rounded,
   };
 }

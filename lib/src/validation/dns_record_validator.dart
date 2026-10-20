@@ -19,12 +19,17 @@ abstract final class DnsRecordValidator {
     // Service and verification names such as `_dmarc` or `_minecraft._tcp`
     // need underscores; `@` is Cloudflare's shorthand for the zone apex.
     final allowUnderscore = switch (record.type) {
-      DnsRecordType.srv || DnsRecordType.txt || DnsRecordType.cname => true,
+      DnsRecordType.srv ||
+      DnsRecordType.txt ||
+      DnsRecordType.cname ||
+      DnsRecordType.https ||
+      DnsRecordType.svcb => true,
       DnsRecordType.a ||
       DnsRecordType.aaaa ||
       DnsRecordType.mx ||
       DnsRecordType.caa ||
-      DnsRecordType.ns => false,
+      DnsRecordType.ns ||
+      DnsRecordType.ptr => false,
     };
     if (record.name.trim() != '@' &&
         !_validName(record.name, allowUnderscore: allowUnderscore)) {
@@ -100,6 +105,31 @@ abstract final class DnsRecordValidator {
       case DnsRecordType.ns:
         if (!_validName(record.content)) {
           add('invalid_target', 'Enter a valid nameserver hostname.');
+        }
+      case DnsRecordType.https || DnsRecordType.svcb:
+        final label = record.type.wireName;
+        if (!_inRange(record.priority, 0, 65535)) {
+          add(
+            'invalid_priority',
+            '$label priority must be between 0 and 65535.',
+          );
+        }
+        // `.` stands for the record's own name.
+        final target = record.target?.trim() ?? '';
+        if (target != '.' && !_validName(target)) {
+          add('invalid_target', 'Enter a valid $label target or `.`.');
+        }
+        // Alias mode (priority 0) only points at another name (RFC 9460).
+        if (record.priority == 0 &&
+            (record.svcParams ?? '').trim().isNotEmpty) {
+          add(
+            'alias_with_params',
+            '$label alias records (priority 0) cannot have parameters.',
+          );
+        }
+      case DnsRecordType.ptr:
+        if (!_validName(record.content)) {
+          add('invalid_target', 'Enter a valid PTR target hostname.');
         }
     }
     return issues;

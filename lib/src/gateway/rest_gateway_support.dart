@@ -174,6 +174,52 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     return DnsRecord.fromJson(_stringMap(result));
   }
 
+  /// Validates every change and builds a Cloudflare batch request body.
+  Map<String, Object?> batchBody({
+    required Iterable<DnsRecord> posts,
+    required Iterable<DnsRecord> patches,
+    required Iterable<String> deletes,
+  }) {
+    final patchList = patches.toList(growable: false);
+    if (patchList.any((record) => record.id == null)) {
+      throw ArgumentError.value(
+        patches,
+        'patches',
+        'Every patched record needs an id.',
+      );
+    }
+    return <String, Object?>{
+      'deletes': <Object?>[
+        for (final id in deletes) <String, Object?>{'id': id},
+      ],
+      'patches': <Object?>[
+        for (final record in patchList)
+          <String, Object?>{'id': record.id, ...writeBody(record)},
+      ],
+      'posts': <Object?>[for (final record in posts) writeBody(record)],
+    };
+  }
+
+  /// Parses a batch response, skipping unsupported DNS types.
+  DnsBatchResult parseBatch(Object? result) {
+    if (result is! Map) {
+      throw const CloudflareDnsException('Expected a DNS batch result.');
+    }
+    List<DnsRecord> records(String key) =>
+        result[key] is List ? parseRecords(result[key]) : const <DnsRecord>[];
+    final deletes = result['deletes'];
+    return DnsBatchResult(
+      posts: records('posts'),
+      patches: records('patches'),
+      deletes: deletes is List
+          ? <String>[
+              for (final item in deletes)
+                if (item is Map && item['id'] != null) '${item['id']}',
+            ]
+          : const <String>[],
+    );
+  }
+
   /// Validates [record] and serializes it as a write request body.
   Map<String, Object?> writeBody(DnsRecord record) {
     DnsRecordValidator.validateOrThrow(record);

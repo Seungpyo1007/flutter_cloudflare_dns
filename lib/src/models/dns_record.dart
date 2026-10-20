@@ -7,7 +7,10 @@ enum DnsRecordType {
   srv('SRV'),
   mx('MX'),
   caa('CAA'),
-  ns('NS');
+  ns('NS'),
+  https('HTTPS'),
+  svcb('SVCB'),
+  ptr('PTR');
 
   const DnsRecordType(this.wireName);
 
@@ -36,7 +39,8 @@ enum DnsRecordType {
 /// CAA property tags accepted by [DnsRecord.caa].
 const List<String> caaPropertyTags = <String>['issue', 'issuewild', 'iodef'];
 
-/// A supported DNS record: A, AAAA, CNAME, TXT, SRV, MX, CAA, or NS.
+/// A supported DNS record: A, AAAA, CNAME, TXT, SRV, MX, CAA, NS, HTTPS,
+/// SVCB, or PTR.
 class DnsRecord {
   /// Creates a DNS record.
   const DnsRecord({
@@ -55,6 +59,7 @@ class DnsRecord {
     this.caaFlags,
     this.caaTag,
     this.caaValue,
+    this.svcParams,
   });
 
   /// Creates an SRV record.
@@ -136,6 +141,81 @@ class DnsRecord {
     );
   }
 
+  /// Creates an HTTPS record, for example `1 . alpn="h3,h2"`.
+  ///
+  /// A [priority] of 0 is alias mode and takes no [params]. A [target] of `.`
+  /// means the record's own name.
+  factory DnsRecord.https({
+    String? id,
+    required String name,
+    required int priority,
+    String target = '.',
+    String params = '',
+    int ttl = 1,
+    String? comment,
+    List<String> tags = const <String>[],
+  }) => DnsRecord._serviceBinding(
+    DnsRecordType.https,
+    id: id,
+    name: name,
+    priority: priority,
+    target: target,
+    params: params,
+    ttl: ttl,
+    comment: comment,
+    tags: tags,
+  );
+
+  /// Creates an SVCB record, for example `1 svc.example.com. port=8443`.
+  ///
+  /// A [priority] of 0 is alias mode and takes no [params].
+  factory DnsRecord.svcb({
+    String? id,
+    required String name,
+    required int priority,
+    required String target,
+    String params = '',
+    int ttl = 1,
+    String? comment,
+    List<String> tags = const <String>[],
+  }) => DnsRecord._serviceBinding(
+    DnsRecordType.svcb,
+    id: id,
+    name: name,
+    priority: priority,
+    target: target,
+    params: params,
+    ttl: ttl,
+    comment: comment,
+    tags: tags,
+  );
+
+  factory DnsRecord._serviceBinding(
+    DnsRecordType type, {
+    String? id,
+    required String name,
+    required int priority,
+    required String target,
+    required String params,
+    required int ttl,
+    String? comment,
+    required List<String> tags,
+  }) {
+    return DnsRecord(
+      id: id,
+      type: type,
+      name: name,
+      content: '$priority $target $params'.trim(),
+      ttl: ttl,
+      proxied: false,
+      comment: comment,
+      tags: tags,
+      priority: priority,
+      target: target,
+      svcParams: params.trim(),
+    );
+  }
+
   /// Parses a Cloudflare-compatible or DNS-over-HTTPS record JSON object.
   factory DnsRecord.fromJson(Map<String, Object?> json) {
     final type = DnsRecordType.parse(json['type']);
@@ -154,6 +234,7 @@ class DnsRecord {
     int? caaFlags;
     String? caaTag;
     String? caaValue;
+    String? svcParams;
 
     switch (type) {
       case DnsRecordType.srv:
@@ -198,11 +279,24 @@ class DnsRecord {
         if (caaFlags != null && caaTag != null && caaValue != null) {
           content = '$caaFlags $caaTag "$caaValue"';
         }
+      case DnsRecordType.https || DnsRecordType.svcb:
+        // Cloudflare splits `data` into priority, target, and value; DoH
+        // answers inline them as `1 . alpn=h3,h2`.
+        final inline = RegExp(
+          r'^\s*(\d+)\s+(\S+)\s*(.*?)\s*$',
+        ).firstMatch(rawContent);
+        priority = _asInt(data?['priority']) ?? _asInt(inline?.group(1));
+        target = data?['target']?.toString() ?? inline?.group(2);
+        svcParams = data?['value']?.toString() ?? inline?.group(3) ?? '';
+        if (priority != null && target != null) {
+          content = '$priority $target $svcParams'.trim();
+        }
       case DnsRecordType.a ||
           DnsRecordType.aaaa ||
           DnsRecordType.cname ||
           DnsRecordType.txt ||
-          DnsRecordType.ns:
+          DnsRecordType.ns ||
+          DnsRecordType.ptr:
         break;
     }
 
@@ -222,6 +316,7 @@ class DnsRecord {
       caaFlags: caaFlags,
       caaTag: caaTag,
       caaValue: caaValue,
+      svcParams: svcParams,
     );
   }
 
@@ -235,7 +330,8 @@ class DnsRecord {
   final String name;
 
   /// Record content. SRV content is `priority weight port target`, MX content
-  /// is the mail server hostname, and CAA content is `flags tag "value"`.
+  /// is the mail server hostname, CAA content is `flags tag "value"`, and
+  /// HTTPS and SVCB content is `priority target params`.
   final String content;
 
   /// TTL in seconds. Cloudflare uses `1` for automatic TTL.
@@ -250,7 +346,7 @@ class DnsRecord {
   /// Cloudflare record tags, each formatted as `name` or `name:value`.
   final List<String> tags;
 
-  /// SRV or MX priority.
+  /// SRV, MX, HTTPS, or SVCB priority.
   final int? priority;
 
   /// SRV weight.
@@ -259,7 +355,7 @@ class DnsRecord {
   /// SRV target port.
   final int? port;
 
-  /// SRV target hostname.
+  /// SRV, HTTPS, or SVCB target hostname.
   final String? target;
 
   /// CAA flags, usually `0`.
@@ -270,6 +366,9 @@ class DnsRecord {
 
   /// CAA property value, such as `letsencrypt.org`.
   final String? caaValue;
+
+  /// HTTPS or SVCB service parameters, such as `alpn="h3,h2" port=8443`.
+  final String? svcParams;
 
   /// Serializes this record for the Cloudflare DNS API.
   Map<String, Object?> toCloudflareJson() {
@@ -295,13 +394,19 @@ class DnsRecord {
           'tag': caaTag,
           'value': caaValue,
         };
+      case DnsRecordType.https || DnsRecordType.svcb:
+        json['data'] = <String, Object?>{
+          'priority': priority,
+          'target': target,
+          'value': svcParams ?? '',
+        };
       case DnsRecordType.mx:
         json['content'] = content;
         json['priority'] = priority;
       case DnsRecordType.a || DnsRecordType.aaaa || DnsRecordType.cname:
         json['content'] = content;
         if (proxied != null) json['proxied'] = proxied;
-      case DnsRecordType.txt || DnsRecordType.ns:
+      case DnsRecordType.txt || DnsRecordType.ns || DnsRecordType.ptr:
         json['content'] = content;
     }
     return json;
@@ -324,6 +429,7 @@ class DnsRecord {
     int? caaFlags,
     String? caaTag,
     String? caaValue,
+    String? svcParams,
   }) {
     return DnsRecord(
       id: id ?? this.id,
@@ -341,6 +447,7 @@ class DnsRecord {
       caaFlags: caaFlags ?? this.caaFlags,
       caaTag: caaTag ?? this.caaTag,
       caaValue: caaValue ?? this.caaValue,
+      svcParams: svcParams ?? this.svcParams,
     );
   }
 
@@ -353,10 +460,17 @@ class DnsRecord {
         '${priority ?? 0} ${content.trim().replaceAll(RegExp(r'\.$'), '')}',
       DnsRecordType.caa => '${caaFlags ?? 0} ${caaTag ?? ''} ${caaValue ?? ''}',
       DnsRecordType.txt => content.trim().replaceAll(RegExp(r'^"|"$'), ''),
+      // DoH answers drop the quotes Cloudflare keeps around values such as
+      // alpn="h3,h2".
+      DnsRecordType.https || DnsRecordType.svcb =>
+        '${priority ?? 0} '
+            '${(target ?? '').replaceAll(RegExp(r'(?<=.)\.$'), '')} '
+            '${(svcParams ?? '').replaceAll('"', '').trim()}',
       DnsRecordType.a ||
       DnsRecordType.aaaa ||
       DnsRecordType.cname ||
-      DnsRecordType.ns => content,
+      DnsRecordType.ns ||
+      DnsRecordType.ptr => content,
     };
     return value.trim().replaceAll(RegExp(r'\.$'), '').toLowerCase();
   }

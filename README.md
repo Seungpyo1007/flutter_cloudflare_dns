@@ -6,7 +6,8 @@
 
 A Flutter-first toolkit for diagnosing and managing Cloudflare DNS. It ships
 with a Material 3 dashboard, a public DNS-over-HTTPS health checker, and safe
-gateway abstractions for A, AAAA, CNAME, TXT, SRV, MX, CAA, and NS records.
+gateway abstractions for A, AAAA, CNAME, TXT, SRV, MX, CAA, NS, HTTPS, SVCB,
+and PTR records.
 
 ## Platform support
 
@@ -46,20 +47,27 @@ type picker, SRV fields, TTL presets, and live record preview. You can also
   services, MX mail routing, and CAA certificate authority policies.
 - Edit Cloudflare record comments and tags (tags need a Pro plan or above).
 - Search records by name or value, copy values, and duplicate records.
-- Compare Cloudflare and Google public DNS answers to check propagation.
+- Compare Cloudflare and Google public DNS answers to check propagation, and
+  watch a saved record until every resolver returns it.
+- Export and import BIND zone files, compatible with Cloudflare's own DNS
+  export.
+- Apply many changes in one atomic Cloudflare batch request.
+- Edit HTTPS and SVCB service bindings (priority, target, parameters) and PTR
+  records.
 - Retry rate-limited (HTTP 429) Cloudflare API requests automatically.
 
 ## Installation
 
 ```yaml
 dependencies:
-  flutter_cloudflare_dns: ^0.1.2
+  flutter_cloudflare_dns: ^0.2.0
 ```
 
 The package requires Dart 3.12 and Flutter 3.44 or newer.
 
-Upgrading from 0.0.x: `DnsRecordType` now includes `mx`, `caa`, and `ns`, so
-exhaustive `switch` statements over it need the new cases.
+Upgrading from 0.1.x: `DnsRecordType` now includes `https`, `svcb`, and `ptr`,
+so exhaustive `switch` statements over it need the new cases. Upgrading from
+0.0.x: `mx`, `caa`, and `ns` were added in 0.1.0.
 
 ## Recommended: backend proxy
 
@@ -94,6 +102,7 @@ The proxy REST contract is:
 | `POST` | `/dns-records?zoneId=...` | Create a record |
 | `PATCH` | `/dns-records/{id}?zoneId=...` | Update a record |
 | `DELETE` | `/dns-records/{id}?zoneId=...` | Delete a record |
+| `POST` | `/dns-records/batch?zoneId=...` | Apply a batch (optional, see below) |
 
 Responses may be a JSON result directly or wrapped as `{ "result": ... }`.
 List requests carry a 1-based `page` parameter. To paginate, answer with
@@ -101,6 +110,36 @@ List requests carry a 1-based `page` parameter. To paginate, answer with
 requesting pages until it reaches `total_pages`. A bare list is treated as the
 only page. Errors may use `{ "message": "...", "code": "..." }` or
 Cloudflare's `errors` array.
+
+## Batch changes
+
+`DirectCloudflareGateway` and `ProxyCloudflareGateway` also implement
+`BatchCapableGateway`, which applies deletes, updates, and creates in one
+request. Cloudflare applies all of them or none:
+
+```dart
+if (gateway is BatchCapableGateway) {
+  final result = await gateway.batch(
+    zoneId,
+    posts: newRecords,
+    patches: changedRecords, // each needs an id
+    deletes: <String>['record-id'],
+  );
+  print('${result.posts.length} records created');
+}
+```
+
+The proxy's batch endpoint receives Cloudflare's body unchanged:
+`{ "deletes": [{ "id": ... }], "patches": [{ "id": ..., ... }], "posts":
+[...] }`, and should answer with `{ "result": { "deletes": [...], "patches":
+[...], "posts": [...] } }`. Forward it to Cloudflare's
+`POST /zones/{zone_id}/dns_records/batch`. Cloudflare caps the number of
+changes in one batch depending on the plan.
+
+`BatchCapableGateway` is a separate interface, so your own
+`CloudflareDnsGateway` implementations keep compiling. The dashboard uses a
+batch for zone file imports when the gateway supports it, and creates records
+one by one otherwise.
 
 ## Direct Cloudflare API access
 
@@ -162,6 +201,69 @@ for (final comparison in comparisons) {
   print('${comparison.name} ${comparison.type.wireName}: $state');
 }
 ```
+
+### Watching a change propagate
+
+After saving a record, poll the public resolvers until they all return it:
+
+```dart
+final changed = DnsRecord(
+  type: DnsRecordType.a,
+  name: 'www.example.com',
+  content: '192.0.2.10',
+);
+await for (final comparison in DnsDiagnostics().watchPropagation(changed)) {
+  print(comparison.matches(changed) ? 'propagated' : 'still propagating');
+}
+```
+
+It polls every 15 seconds for up to 10 minutes by default (`interval`,
+`timeout`). The dashboard does this for every record you save that is not
+proxied, and shows "Propagating", "Propagated", or "Not visible everywhere
+yet" on the record.
+
+## Zone files
+
+`DnsZoneFile` reads and writes BIND zone files. The output matches
+Cloudflare's DNS export, including the `cf_tags=cf-proxied:true` comment, so
+files move between this package and the Cloudflare dashboard both ways.
+
+```dart
+final text = DnsZoneFile.encode(records, origin: 'example.com');
+
+final result = DnsZoneFile.parse(text, origin: 'example.com');
+for (final issue in result.issues) {
+  print('line ${issue.line}: ${issue.message}'); // e.g. SOA is skipped
+}
+```
+
+`parse` handles `$ORIGIN`, `$TTL` (including units such as `1h`), `@`, blank
+owner names, parentheses, comments, and multi-string TXT values. Records of
+unsupported types are reported and skipped. Records without a TTL get the
+`$TTL` value, or Cloudflare's automatic TTL (`1`).
+
+In the dashboard, the zone file menu next to refresh copies the zone as a zone
+file, or imports a pasted one. The import preview validates every record and
+skips records that already exist.
+
+## HTTPS, SVCB, and PTR records
+
+```dart
+final https = DnsRecord.https(
+  name: 'example.com',
+  priority: 1, // 0 makes an alias to `target` and takes no parameters
+  params: 'alpn="h3,h2"',
+); // target defaults to `.`, the record's own name
+
+const reverse = DnsRecord(
+  type: DnsRecordType.ptr,
+  name: '1.2.0.192.in-addr.arpa',
+  content: 'host.example.com',
+);
+```
+
+Cloudflare accepts PTR records only in reverse DNS zones such as
+`2.0.192.in-addr.arpa`.
 
 ## Minecraft Java SRV record
 
@@ -228,8 +330,8 @@ the web):
 - Tokens are supplied per request and are never included in exception messages.
 - Record writes are validated before network calls.
 - Deletion in the dashboard requires confirmation.
-- Record types other than A, AAAA, CNAME, TXT, SRV, MX, CAA, and NS are skipped
-  when listing records.
+- Record types other than A, AAAA, CNAME, TXT, SRV, MX, CAA, NS, HTTPS, SVCB,
+  and PTR are skipped when listing records.
 
 Issues and contributions are welcome on
 [GitHub](https://github.com/Seungpyo1007/flutter_cloudflare_dns).

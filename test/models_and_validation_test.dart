@@ -309,4 +309,220 @@ void main() {
       );
     });
   });
+
+  group('HTTPS, SVCB, and PTR', () {
+    test('parse HTTPS from the Cloudflare API and from DoH', () {
+      final api = DnsRecord.fromJson(<String, Object?>{
+        'id': 'https-1',
+        'type': 'HTTPS',
+        'name': 'example.com',
+        'content': '1 . alpn="h3,h2"',
+        'data': <String, Object?>{
+          'priority': 1,
+          'target': '.',
+          'value': 'alpn="h3,h2"',
+        },
+      });
+      final doh = DnsRecord.fromJson(<String, Object?>{
+        'type': 'HTTPS',
+        'name': 'example.com',
+        'content': '1 . alpn=h3,h2',
+      });
+
+      expect(api.priority, 1);
+      expect(api.target, '.');
+      expect(api.svcParams, 'alpn="h3,h2"');
+      expect(doh.svcParams, 'alpn=h3,h2');
+      // DoH drops the quotes, so both must still match.
+      expect(doh.canonicalContent, api.canonicalContent);
+      expect(api.toCloudflareJson()['data'], <String, Object?>{
+        'priority': 1,
+        'target': '.',
+        'value': 'alpn="h3,h2"',
+      });
+    });
+
+    test('round trip SVCB and PTR records', () {
+      final svcb = DnsRecord.svcb(
+        name: '_8443._foo.example.com',
+        priority: 1,
+        target: 'svc.example.com',
+        params: 'port=8443',
+      );
+      final parsed = DnsRecord.fromJson(svcb.toCloudflareJson());
+      expect(parsed.type, DnsRecordType.svcb);
+      expect(parsed.content, '1 svc.example.com port=8443');
+      expect(parsed.svcParams, 'port=8443');
+
+      const ptr = DnsRecord(
+        type: DnsRecordType.ptr,
+        name: '1.2.0.192.in-addr.arpa',
+        content: 'host.example.com',
+      );
+      expect(ptr.toCloudflareJson()['content'], 'host.example.com');
+      expect(DnsRecordValidator.validate(ptr), isEmpty);
+    });
+
+    test('validate service binding priority, target, and alias mode', () {
+      expect(
+        DnsRecordValidator.validate(
+          DnsRecord.https(name: 'example.com', priority: 1, params: 'alpn=h2'),
+        ),
+        isEmpty,
+      );
+      expect(
+        DnsRecordValidator.validate(
+          DnsRecord.https(
+            name: 'example.com',
+            priority: 0,
+            target: 'cdn.example.net',
+          ),
+        ),
+        isEmpty,
+      );
+
+      List<String> codes(DnsRecord record) => DnsRecordValidator.validate(
+        record,
+      ).map((issue) => issue.code).toList();
+      expect(
+        codes(
+          DnsRecord.https(name: 'example.com', priority: 0, params: 'alpn=h2'),
+        ),
+        contains('alias_with_params'),
+      );
+      expect(
+        codes(DnsRecord.svcb(name: 'example.com', priority: 70000, target: '')),
+        containsAll(<String>['invalid_priority', 'invalid_target']),
+      );
+      expect(
+        codes(
+          const DnsRecord(
+            type: DnsRecordType.ptr,
+            name: '1.2.0.192.in-addr.arpa',
+            content: 'not a host',
+          ),
+        ),
+        contains('invalid_target'),
+      );
+    });
+  });
+
+  group('DnsZoneFile', () {
+    const zoneFile = r'''
+;; Exported from somewhere
+example.com.	3600	IN	SOA	ns.example.net. admin.example.com. 1 7200 3600 1209600 300
+$TTL 1h
+@	IN	A	192.0.2.1 ; cf_tags=cf-proxied:true
+www	300	IN	CNAME	@ ; cf_tags=cf-proxied:false
+	IN	TXT	"say \"hi\"" " and bye"
+_minecraft._tcp	60	IN	SRV	0 5 25565 mc
+@	IN	MX	10 mail.example.net.
+@	IN	CAA	0 issue "letsencrypt.org"
+@	IN	HTTPS	1 . alpn="h3,h2"
+_8443._svc	IN	SVCB	( 1
+		svc.example.net. port=8443 )
+host	IN	LOC	1 2 3
+''';
+
+    test('parses directives, owners, TTLs, and every supported type', () {
+      final result = DnsZoneFile.parse(zoneFile, origin: 'example.com');
+      final records = result.records;
+
+      expect(records.map((r) => r.type.wireName), <String>[
+        'A',
+        'CNAME',
+        'TXT',
+        'SRV',
+        'MX',
+        'CAA',
+        'HTTPS',
+        'SVCB',
+      ]);
+      expect(records[0].name, 'example.com');
+      expect(records[0].ttl, 3600);
+      expect(records[0].proxied, isTrue);
+      expect(records[1].content, 'example.com');
+      expect(records[1].proxied, isFalse);
+      // A blank owner repeats the previous one; quoted strings concatenate.
+      expect(records[2].name, 'www.example.com');
+      expect(records[2].content, 'say "hi" and bye');
+      expect(records[3].target, 'mc.example.com');
+      expect(records[4].content, 'mail.example.net');
+      expect(records[5].caaValue, 'letsencrypt.org');
+      expect(records[6].svcParams, 'alpn="h3,h2"');
+      expect(records[7].name, '_8443._svc.example.com');
+      expect(records[7].target, 'svc.example.net');
+      expect(
+        records.every((r) => DnsRecordValidator.validate(r).isEmpty),
+        isTrue,
+      );
+
+      expect(
+        result.issues.map((issue) => (issue.line, issue.code)),
+        <(int, String)>[(2, 'unsupported_type'), (13, 'unsupported_type')],
+      );
+    });
+
+    test('round trips through encode', () {
+      final records = DnsZoneFile.parse(
+        zoneFile,
+        origin: 'example.com',
+      ).records;
+      final encoded = DnsZoneFile.encode(records, origin: 'example.com');
+      final again = DnsZoneFile.parse(encoded, origin: 'example.com');
+
+      expect(
+        encoded,
+        contains(
+          'example.com.\t3600\tIN\tA\t192.0.2.1 ; cf_tags=cf-proxied:true',
+        ),
+      );
+      expect(
+        encoded,
+        contains(
+          '_minecraft._tcp.example.com.\t60\tIN\tSRV\t0 5 25565 mc.example.com.',
+        ),
+      );
+      expect(again.issues, isEmpty);
+      expect(
+        again.records.map(
+          (r) => '${r.name} ${r.type.wireName} ${r.canonicalContent} ${r.ttl}',
+        ),
+        records.map(
+          (r) => '${r.name} ${r.type.wireName} ${r.canonicalContent} ${r.ttl}',
+        ),
+      );
+    });
+
+    test('encodes zone-relative names and splits long TXT values', () {
+      final encoded = DnsZoneFile.encode(<DnsRecord>[
+        const DnsRecord(type: DnsRecordType.a, name: '@', content: '192.0.2.1'),
+        DnsRecord(type: DnsRecordType.txt, name: 'long', content: 'x' * 300),
+      ], origin: 'example.com');
+
+      expect(encoded, contains('example.com.\t1\tIN\tA\t192.0.2.1\n'));
+      expect(
+        encoded,
+        contains('long.example.com.\t1\tIN\tTXT\t"${'x' * 255}" "${'x' * 45}"'),
+      );
+      final txt = DnsZoneFile.parse(
+        encoded,
+        origin: 'example.com',
+      ).records.last;
+      expect(txt.content, 'x' * 300);
+    });
+
+    test('reports malformed records', () {
+      final result = DnsZoneFile.parse(
+        'www IN MX mail\n IN A 192.0.2.1\nfoo 300\n',
+        origin: 'example.com',
+      );
+
+      expect(result.records.single.name, 'www.example.com');
+      expect(result.issues.map((issue) => issue.code), <String>[
+        'invalid_rdata',
+        'missing_type',
+      ]);
+    });
+  });
 }
