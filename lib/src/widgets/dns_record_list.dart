@@ -2,6 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/dns_record.dart';
+import 'dns_sync_status_icon.dart';
+
+/// Whether a saved record is visible on public resolvers yet.
+enum DnsPropagationStatus {
+  /// Resolvers are being polled and do not all return the record yet.
+  propagating,
+
+  /// Every resolver returns the record.
+  propagated,
+
+  /// Polling stopped before every resolver returned the record.
+  timedOut,
+}
+
+/// The key [DnsRecordList.propagation] uses for [record]: its id, or
+/// `name|TYPE` when it has none.
+String dnsPropagationKey(DnsRecord record) =>
+    record.id ?? '${record.name}|${record.type.wireName}';
 
 /// Responsive Material list of DNS records.
 class DnsRecordList extends StatelessWidget {
@@ -13,6 +31,7 @@ class DnsRecordList extends StatelessWidget {
     this.onDelete,
     this.onDuplicate,
     this.enabled = true,
+    this.propagation = const <String, DnsPropagationStatus>{},
   });
 
   /// Records to display.
@@ -29,6 +48,9 @@ class DnsRecordList extends StatelessWidget {
 
   /// Whether actions are enabled.
   final bool enabled;
+
+  /// Propagation state shown on records, keyed by [dnsPropagationKey].
+  final Map<String, DnsPropagationStatus> propagation;
 
   @override
   Widget build(BuildContext context) {
@@ -68,6 +90,7 @@ class DnsRecordList extends StatelessWidget {
               onEdit: onEdit,
               onDelete: onDelete,
               onDuplicate: onDuplicate,
+              propagation: propagation[dnsPropagationKey(records[index])],
             ),
             if (index != records.length - 1)
               const Divider(height: 1, indent: 82, endIndent: 18),
@@ -85,6 +108,7 @@ class _DnsRecordTile extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onDuplicate,
+    required this.propagation,
   });
 
   final DnsRecord record;
@@ -92,6 +116,7 @@ class _DnsRecordTile extends StatelessWidget {
   final ValueChanged<DnsRecord>? onEdit;
   final ValueChanged<DnsRecord>? onDelete;
   final ValueChanged<DnsRecord>? onDuplicate;
+  final DnsPropagationStatus? propagation;
 
   @override
   Widget build(BuildContext context) {
@@ -100,12 +125,15 @@ class _DnsRecordTile extends StatelessWidget {
     final content = switch (record.type) {
       DnsRecordType.srv => '${record.target}:${record.port}',
       DnsRecordType.caa => '${record.caaTag} ${record.caaValue}',
+      DnsRecordType.https ||
+      DnsRecordType.svcb => '${record.target} ${record.svcParams ?? ''}'.trim(),
       DnsRecordType.a ||
       DnsRecordType.aaaa ||
       DnsRecordType.cname ||
       DnsRecordType.txt ||
       DnsRecordType.mx ||
-      DnsRecordType.ns => record.content,
+      DnsRecordType.ns ||
+      DnsRecordType.ptr => record.content,
     };
 
     return InkWell(
@@ -132,7 +160,7 @@ class _DnsRecordTile extends StatelessWidget {
                 record.type.wireName,
                 style: TextStyle(
                   color: accent.foreground,
-                  fontSize: record.type == DnsRecordType.cname ? 10 : 12,
+                  fontSize: record.type.wireName.length > 4 ? 10 : 12,
                   fontWeight: FontWeight.w900,
                   letterSpacing: 0.2,
                 ),
@@ -190,6 +218,16 @@ class _DnsRecordTile extends StatelessWidget {
                           icon: Icons.low_priority_rounded,
                           label: 'Priority ${record.priority}',
                         ),
+                      if (record.type == DnsRecordType.https ||
+                          record.type == DnsRecordType.svcb)
+                        _MetadataLabel(
+                          icon: Icons.low_priority_rounded,
+                          label: record.priority == 0
+                              ? 'Alias'
+                              : 'Priority ${record.priority}',
+                        ),
+                      if (propagation != null)
+                        _PropagationLabel(status: propagation!),
                       if (record.tags.isNotEmpty)
                         _MetadataLabel(
                           icon: Icons.sell_outlined,
@@ -244,6 +282,62 @@ class _DnsRecordTile extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PropagationLabel extends StatelessWidget {
+  const _PropagationLabel({required this.status});
+
+  final DnsPropagationStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final (label, foreground, background) = switch (status) {
+      DnsPropagationStatus.propagating => (
+        'Propagating',
+        colors.onSurfaceVariant,
+        colors.surfaceContainerHighest,
+      ),
+      DnsPropagationStatus.propagated => (
+        'Propagated',
+        colors.primary,
+        colors.primaryContainer,
+      ),
+      DnsPropagationStatus.timedOut => (
+        'Not visible everywhere yet',
+        colors.onErrorContainer,
+        colors.errorContainer,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          DnsSyncStatusIcon(
+            active: status == DnsPropagationStatus.propagating,
+            icon: status == DnsPropagationStatus.timedOut
+                ? Icons.schedule_rounded
+                : Icons.public_rounded,
+            size: 14,
+            color: foreground,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -323,8 +417,12 @@ class _MetadataLabel extends StatelessWidget {
     container: colors.errorContainer,
     foreground: colors.onErrorContainer,
   ),
-  DnsRecordType.ns => (
+  DnsRecordType.ns || DnsRecordType.ptr => (
     container: colors.surfaceContainerHighest,
     foreground: colors.onSurfaceVariant,
+  ),
+  DnsRecordType.https || DnsRecordType.svcb => (
+    container: colors.secondaryContainer,
+    foreground: colors.onSecondaryContainer,
   ),
 };

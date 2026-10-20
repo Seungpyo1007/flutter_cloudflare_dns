@@ -1,3 +1,28 @@
+## 0.2.0
+
+**Breaking:** `DnsRecordType` gains `https`, `svcb`, and `ptr`. Exhaustive
+`switch` statements over the enum need the new cases.
+
+* Add HTTPS, SVCB, and PTR records to the model, validator, DoH diagnostics,
+  record list, editor sheet, dashboard filters, and zone files. HTTPS and SVCB
+  records carry `priority`, `target`, and `svcParams`; see `DnsRecord.https`
+  and `DnsRecord.svcb`.
+* Export and import BIND zone files with `DnsZoneFile.encode` and
+  `DnsZoneFile.parse`, compatible with Cloudflare's DNS export. The
+  dashboard's zone file menu copies the zone or imports a pasted file through
+  `DnsZoneImportSheet`, which previews validation errors and skips existing
+  records.
+* Watch a change propagate with `DnsDiagnostics.watchPropagation` and
+  `DnsResolverComparison.matches`. The dashboard tracks every saved record
+  that is not proxied and shows its state in `DnsRecordList` through the new
+  `propagation` map (`DnsPropagationStatus`).
+* Add `BatchCapableGateway` with `batch`, implemented by
+  `DirectCloudflareGateway` (Cloudflare's `dns_records/batch`) and
+  `ProxyCloudflareGateway` (`POST /dns-records/batch?zoneId=...`). Zone file
+  imports use it when available. `CloudflareDnsGateway` is unchanged.
+* README: link the related `rdap`, `mail_dns_check`, and `tls_inspector`
+  packages.
+
 ## 0.1.2
 
 * Search records by name or value from the dashboard.

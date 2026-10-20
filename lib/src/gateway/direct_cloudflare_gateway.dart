@@ -2,6 +2,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/dns_record.dart';
 import '../models/dns_zone.dart';
+import 'cloudflare_dns_gateway.dart';
 import 'rest_gateway_support.dart';
 
 /// Calls Cloudflare's API directly.
@@ -11,7 +12,8 @@ import 'rest_gateway_support.dart';
 ///
 /// Not usable from Flutter web with the default [apiBaseUri]: the Cloudflare
 /// API does not send CORS headers, so browsers block the requests.
-class DirectCloudflareGateway extends RestCloudflareDnsGateway {
+class DirectCloudflareGateway extends RestCloudflareDnsGateway
+    implements BatchCapableGateway {
   /// Creates a direct gateway.
   ///
   /// [acknowledgeTokenRisk] must be true. The value returned by
@@ -117,5 +119,22 @@ class DirectCloudflareGateway extends RestCloudflareDnsGateway {
       headers: await _headers(),
     );
     decode(response);
+  }
+
+  @override
+  Future<DnsBatchResult> batch(
+    String zoneId, {
+    Iterable<DnsRecord> posts = const <DnsRecord>[],
+    Iterable<DnsRecord> patches = const <DnsRecord>[],
+    Iterable<String> deletes = const <String>[],
+  }) async {
+    final body = batchBody(posts: posts, patches: patches, deletes: deletes);
+    final response = await send(
+      'POST',
+      _uri('zones/$zoneId/dns_records/batch'),
+      headers: await _headers(),
+      body: body,
+    );
+    return parseBatch(decode(response));
   }
 }

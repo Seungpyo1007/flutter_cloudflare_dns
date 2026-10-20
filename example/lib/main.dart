@@ -78,6 +78,7 @@ class _ExampleDashboardState extends State<ExampleDashboard> {
         gateway: gateway,
         diagnostics: DemoDiagnostics(),
         initialZoneName: 'seungpyo.online',
+        propagationCheckInterval: const Duration(seconds: 2),
       ),
     );
   }
@@ -85,6 +86,8 @@ class _ExampleDashboardState extends State<ExampleDashboard> {
 
 /// Stable public-health result for a deterministic, offline-friendly demo.
 class DemoDiagnostics extends DnsDiagnostics {
+  final _polls = <String, int>{};
+
   @override
   Future<DnsHealthReport> check(
     String domain, {
@@ -109,6 +112,22 @@ class DemoDiagnostics extends DnsDiagnostics {
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 600));
     final list = records.toList(growable: false);
+    // A saved record is watched alone; Google sees it from the third poll.
+    if (list.length == 1) {
+      final record = list.single;
+      final key = '${record.name}|${record.type.wireName}';
+      final polls = _polls[key] = (_polls[key] ?? 0) + 1;
+      return <DnsResolverComparison>[
+        DnsResolverComparison(
+          name: record.name,
+          type: record.type,
+          answers: <String, List<DnsRecord>>{
+            'Cloudflare': <DnsRecord>[record],
+            'Google': polls >= 3 ? <DnsRecord>[record] : const <DnsRecord>[],
+          },
+        ),
+      ];
+    }
     return <DnsResolverComparison>[
       for (var i = 0; i < list.length; i++)
         DnsResolverComparison(
@@ -127,7 +146,9 @@ class DemoDiagnostics extends DnsDiagnostics {
 }
 
 /// In-memory gateway so the example is safe to run without a Cloudflare token.
-class DemoDnsGateway implements CloudflareDnsGateway {
+///
+/// It supports batches, so zone file imports are applied in one step.
+class DemoDnsGateway implements BatchCapableGateway {
   final records = <DnsRecord>[
     const DnsRecord(
       id: 'web',
@@ -163,6 +184,12 @@ class DemoDnsGateway implements CloudflareDnsGateway {
       tag: 'issue',
       value: 'letsencrypt.org',
     ),
+    DnsRecord.https(
+      id: 'https',
+      name: 'seungpyo.online',
+      priority: 1,
+      params: 'alpn="h3,h2"',
+    ),
   ];
 
   @override
@@ -195,5 +222,27 @@ class DemoDnsGateway implements CloudflareDnsGateway {
   @override
   Future<void> deleteRecord(String zoneId, String recordId) async {
     records.removeWhere((record) => record.id == recordId);
+  }
+
+  @override
+  Future<DnsBatchResult> batch(
+    String zoneId, {
+    Iterable<DnsRecord> posts = const <DnsRecord>[],
+    Iterable<DnsRecord> patches = const <DnsRecord>[],
+    Iterable<String> deletes = const <String>[],
+  }) async {
+    final ids = deletes.toSet();
+    records.removeWhere((record) => ids.contains(record.id));
+    final updated = <DnsRecord>[
+      for (final patch in patches) await updateRecord(zoneId, patch.id!, patch),
+    ];
+    final created = <DnsRecord>[
+      for (final post in posts) await createRecord(zoneId, post),
+    ];
+    return DnsBatchResult(
+      posts: created,
+      patches: updated,
+      deletes: ids.toList(growable: false),
+    );
   }
 }

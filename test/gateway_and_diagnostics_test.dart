@@ -226,8 +226,8 @@ void main() {
               'content': '192.0.2.1',
             },
             <String, Object?>{
-              'id': 'ptr-1',
-              'type': 'PTR',
+              'id': 'loc-1',
+              'type': 'LOC',
               'name': '1.2.0.192.in-addr.arpa',
               'content': 'example.com',
             },
@@ -421,6 +421,244 @@ void main() {
       expect(comparisons.map((c) => c.consistent), <bool>[true, false, false]);
       expect(comparisons[1].answers['Google']!.single.content, '192.0.2.9');
       expect(comparisons.last.failedResolvers, <String>{'Google'});
+    });
+  });
+
+  group('DnsDiagnostics new types and propagation', () {
+    test('parses HTTPS, SVCB, and PTR answers', () async {
+      final client = MockClient((request) async {
+        final answer = switch (request.url.queryParameters['type']) {
+          'HTTPS' => <String, Object?>{'type': 65, 'data': '1 . alpn=h3,h2'},
+          'SVCB' => <String, Object?>{
+            'type': 64,
+            'data': '1 svc.example.com. port=8443',
+          },
+          _ => <String, Object?>{'type': 12, 'data': 'host.example.com.'},
+        };
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'Status': 0,
+            'Answer': <Object?>[
+              <String, Object?>{'name': 'example.com.', 'TTL': 300, ...answer},
+            ],
+          }),
+          200,
+        );
+      });
+      final diagnostics = DnsDiagnostics(client: client);
+
+      final https = await diagnostics.lookup(
+        'example.com',
+        DnsRecordType.https,
+      );
+      final svcb = await diagnostics.lookup('example.com', DnsRecordType.svcb);
+      final ptr = await diagnostics.lookup('example.com', DnsRecordType.ptr);
+
+      expect(https.single.svcParams, 'alpn=h3,h2');
+      expect(
+        https.single.canonicalContent,
+        DnsRecord.https(
+          name: 'example.com',
+          priority: 1,
+          params: 'alpn="h3,h2"',
+        ).canonicalContent,
+      );
+      expect(svcb.single.target, 'svc.example.com.');
+      expect(ptr.single.type, DnsRecordType.ptr);
+    });
+
+    test('watchPropagation polls until every resolver matches', () async {
+      var googleCalls = 0;
+      final client = MockClient((request) async {
+        final google = request.url.host == 'dns.google';
+        if (google) googleCalls++;
+        // Google sees the old address on the first poll only.
+        final data = google && googleCalls == 1 ? '192.0.2.1' : '192.0.2.2';
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'Status': 0,
+            'Answer': <Object?>[
+              <String, Object?>{
+                'name': 'www.example.com.',
+                'type': 1,
+                'TTL': 60,
+                'data': data,
+              },
+            ],
+          }),
+          200,
+        );
+      });
+      const record = DnsRecord(
+        type: DnsRecordType.a,
+        name: 'www.example.com',
+        content: '192.0.2.2',
+      );
+
+      final comparisons = await DnsDiagnostics(client: client)
+          .watchPropagation(record, interval: const Duration(milliseconds: 1))
+          .toList();
+
+      expect(comparisons.map((c) => c.matches(record)), <bool>[false, true]);
+    });
+
+    test('watchPropagation stops at the timeout', () async {
+      final client = MockClient(
+        (request) async => http.Response(
+          jsonEncode(<String, Object?>{'Status': 0, 'Answer': <Object?>[]}),
+          200,
+        ),
+      );
+
+      final comparisons = await DnsDiagnostics(client: client)
+          .watchPropagation(
+            const DnsRecord(
+              type: DnsRecordType.a,
+              name: 'www.example.com',
+              content: '192.0.2.2',
+            ),
+            interval: const Duration(milliseconds: 1),
+            timeout: const Duration(milliseconds: 2),
+          )
+          .toList();
+
+      expect(comparisons, hasLength(3));
+      expect(comparisons.last.consistent, isTrue);
+      expect(
+        comparisons.any((c) => c.answers.values.first.isNotEmpty),
+        isFalse,
+      );
+    });
+  });
+
+  group('batch', () {
+    http.Response batchResponse(Map<String, Object?> body) => http.Response(
+      jsonEncode(<String, Object?>{
+        'success': true,
+        'result': <String, Object?>{
+          'deletes': <Object?>[
+            for (final item in body['deletes']! as List) item,
+          ],
+          'patches': body['patches'],
+          'posts': <Object?>[
+            for (final (i, item) in (body['posts']! as List).indexed)
+              <String, Object?>{'id': 'new-$i', ...(item as Map).cast()},
+          ],
+        },
+      }),
+      200,
+    );
+
+    test('DirectCloudflareGateway sends one atomic request', () async {
+      late http.Request captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return batchResponse(
+          (jsonDecode(request.body) as Map).cast<String, Object?>(),
+        );
+      });
+      final gateway = DirectCloudflareGateway(
+        tokenProvider: () async => 'token',
+        acknowledgeTokenRisk: true,
+        client: client,
+      );
+
+      final result = await gateway.batch(
+        'zone-1',
+        posts: <DnsRecord>[
+          DnsRecord.https(name: 'example.com', priority: 1, params: 'alpn=h2'),
+        ],
+        patches: const <DnsRecord>[
+          DnsRecord(
+            id: 'a-1',
+            type: DnsRecordType.a,
+            name: 'example.com',
+            content: '192.0.2.2',
+          ),
+        ],
+        deletes: const <String>['old-1'],
+      );
+
+      expect(captured.method, 'POST');
+      expect(captured.url.path, '/client/v4/zones/zone-1/dns_records/batch');
+      final body = jsonDecode(captured.body) as Map;
+      expect(body['deletes'], <Object?>[
+        <String, Object?>{'id': 'old-1'},
+      ]);
+      expect((body['patches'] as List).single['id'], 'a-1');
+      expect(((body['posts'] as List).single as Map)['data'], <String, Object?>{
+        'priority': 1,
+        'target': '.',
+        'value': 'alpn=h2',
+      });
+      expect(result.posts.single.id, 'new-0');
+      expect(result.posts.single.type, DnsRecordType.https);
+      expect(result.patches.single.content, '192.0.2.2');
+      expect(result.deletes, <String>['old-1']);
+    });
+
+    test('ProxyCloudflareGateway posts to the batch endpoint', () async {
+      late http.Request captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return batchResponse(
+          (jsonDecode(request.body) as Map).cast<String, Object?>(),
+        );
+      });
+      final gateway = ProxyCloudflareGateway(
+        baseUri: Uri.parse('https://backend.example/dns'),
+        client: client,
+      );
+
+      final result = await gateway.batch(
+        'zone-1',
+        posts: const <DnsRecord>[
+          DnsRecord(
+            type: DnsRecordType.ptr,
+            name: '1.2.0.192.in-addr.arpa',
+            content: 'host.example.com',
+          ),
+        ],
+      );
+
+      expect(captured.url.path, '/dns/dns-records/batch');
+      expect(captured.url.queryParameters['zoneId'], 'zone-1');
+      expect(result.posts.single.type, DnsRecordType.ptr);
+    });
+
+    test('validates every change before sending', () async {
+      var sent = false;
+      final gateway = ProxyCloudflareGateway(
+        baseUri: Uri.parse('https://backend.example'),
+        client: MockClient((request) async {
+          sent = true;
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await expectLater(
+        gateway.batch(
+          'zone-1',
+          posts: const <DnsRecord>[
+            DnsRecord(type: DnsRecordType.a, name: 'example.com', content: 'x'),
+          ],
+        ),
+        throwsA(isA<DnsValidationException>()),
+      );
+      await expectLater(
+        gateway.batch(
+          'zone-1',
+          patches: const <DnsRecord>[
+            DnsRecord(
+              type: DnsRecordType.a,
+              name: 'example.com',
+              content: '192.0.2.1',
+            ),
+          ],
+        ),
+        throwsArgumentError,
+      );
+      expect(sent, isFalse);
     });
   });
 

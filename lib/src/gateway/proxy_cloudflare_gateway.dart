@@ -2,18 +2,21 @@ import 'package:http/http.dart' as http;
 
 import '../models/dns_record.dart';
 import '../models/dns_zone.dart';
+import 'cloudflare_dns_gateway.dart';
 import 'rest_gateway_support.dart';
 
 /// Calls an application-owned backend that holds the Cloudflare token.
 ///
 /// REST contract:
 /// `GET /zones`, `GET|POST /dns-records?zoneId=...`, and
-/// `PATCH|DELETE /dns-records/{recordId}?zoneId=...`.
+/// `PATCH|DELETE /dns-records/{recordId}?zoneId=...`, and
+/// `POST /dns-records/batch?zoneId=...` for [batch].
 ///
 /// List requests include a 1-based `page` query parameter. A backend that
 /// paginates should answer with `{ "result": [...], "result_info":
 /// { "total_pages": n } }`; a bare list is treated as the only page.
-class ProxyCloudflareGateway extends RestCloudflareDnsGateway {
+class ProxyCloudflareGateway extends RestCloudflareDnsGateway
+    implements BatchCapableGateway {
   /// Creates a safe-by-default proxy gateway.
   ProxyCloudflareGateway({
     required this.baseUri,
@@ -91,5 +94,22 @@ class ProxyCloudflareGateway extends RestCloudflareDnsGateway {
       headers: await _headers(),
     );
     decode(response);
+  }
+
+  @override
+  Future<DnsBatchResult> batch(
+    String zoneId, {
+    Iterable<DnsRecord> posts = const <DnsRecord>[],
+    Iterable<DnsRecord> patches = const <DnsRecord>[],
+    Iterable<String> deletes = const <String>[],
+  }) async {
+    final body = batchBody(posts: posts, patches: patches, deletes: deletes);
+    final response = await send(
+      'POST',
+      _uri('dns-records/batch', {'zoneId': zoneId}),
+      headers: await _headers(),
+      body: body,
+    );
+    return parseBatch(decode(response));
   }
 }

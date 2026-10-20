@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -78,6 +79,60 @@ class DnsDiagnostics {
         );
       }),
     );
+  }
+
+  /// Polls [compareResolvers] for [record] until every resolver returns it.
+  ///
+  /// Emits one comparison per poll, [interval] apart, and closes after the
+  /// first one that [DnsResolverComparison.matches] [record], or once
+  /// [timeout] has passed. When the last comparison does not match, the
+  /// change has not reached every resolver yet. Cancelling the subscription
+  /// stops polling. [record]'s name must be fully qualified.
+  Stream<DnsResolverComparison> watchPropagation(
+    DnsRecord record, {
+    Duration interval = const Duration(seconds: 15),
+    Duration timeout = const Duration(minutes: 10),
+    Map<String, Uri>? resolvers,
+  }) {
+    // Count polls instead of reading a clock so tests can fake time.
+    final maxPolls = interval > Duration.zero
+        ? timeout.inMicroseconds ~/ interval.inMicroseconds + 1
+        : 1;
+    var polls = 0;
+    var cancelled = false;
+    Timer? timer;
+    late final StreamController<DnsResolverComparison> controller;
+
+    Future<void> poll() async {
+      polls++;
+      var done = polls >= maxPolls;
+      try {
+        final comparisons = await compareResolvers(<DnsRecord>[
+          record,
+        ], resolvers: resolvers);
+        if (cancelled) return;
+        final comparison = comparisons.single;
+        controller.add(comparison);
+        done = done || comparison.matches(record);
+      } on Object catch (error, stackTrace) {
+        if (cancelled) return;
+        controller.addError(error, stackTrace);
+      }
+      if (done) {
+        await controller.close();
+      } else {
+        timer = Timer(interval, poll);
+      }
+    }
+
+    controller = StreamController<DnsResolverComparison>(
+      onListen: poll,
+      onCancel: () {
+        cancelled = true;
+        timer?.cancel();
+      },
+    );
+    return controller.stream;
   }
 
   Future<List<DnsRecord>> _lookupAt(
@@ -264,10 +319,13 @@ DnsRecordType? _typeFromCode(int? code) => switch (code) {
   1 => DnsRecordType.a,
   2 => DnsRecordType.ns,
   5 => DnsRecordType.cname,
+  12 => DnsRecordType.ptr,
   15 => DnsRecordType.mx,
   16 => DnsRecordType.txt,
   28 => DnsRecordType.aaaa,
   33 => DnsRecordType.srv,
+  64 => DnsRecordType.svcb,
+  65 => DnsRecordType.https,
   257 => DnsRecordType.caa,
   _ => null,
 };

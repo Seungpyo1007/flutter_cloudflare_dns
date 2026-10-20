@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_cloudflare_dns/flutter_cloudflare_dns.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -485,6 +486,268 @@ void main() {
     );
     expect(find.textContaining('Google: no answer'), findsOneWidget);
   });
+
+  testWidgets('record editor shows HTTPS fields and saves a record', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DnsRecord? saved;
+    await tester.pumpWidget(
+      _app(
+        Builder(
+          builder: (context) => Center(
+            child: FilledButton(
+              onPressed: () async {
+                saved = await DnsRecordEditorSheet.show(
+                  context,
+                  zoneName: 'example.com',
+                );
+              },
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open editor'));
+    await tester.pumpAndSettle();
+
+    final httpsType = find.bySemanticsLabel('HTTPS record type');
+    await tester.ensureVisible(httpsType);
+    await tester.tap(httpsType);
+    await tester.pumpAndSettle();
+    expect(find.text('Parameters'), findsOneWidget);
+    expect(find.bySemanticsLabel('PTR record type'), findsOneWidget);
+    expect(find.bySemanticsLabel('SVCB record type'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.enterText(find.byType(TextFormField).first, 'example.com');
+    await tester.enterText(find.widgetWithText(TextFormField, '0'), '1');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'alpn="h3,h2" port=8443'),
+      'alpn="h3,h2"',
+    );
+    await tester.ensureVisible(find.text('Save record'));
+    await tester.tap(find.text('Save record'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.type, DnsRecordType.https);
+    expect(saved?.priority, 1);
+    expect(saved?.target, '.');
+    expect(saved?.svcParams, 'alpn="h3,h2"');
+  });
+
+  testWidgets('record list shows propagation state', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        DnsRecordList(
+          records: <DnsRecord>[
+            const DnsRecord(
+              id: 'a-1',
+              type: DnsRecordType.a,
+              name: 'example.com',
+              content: '192.0.2.1',
+            ),
+            DnsRecord.https(
+              name: 'example.com',
+              priority: 0,
+              target: 'cdn.net',
+            ),
+          ],
+          propagation: const <String, DnsPropagationStatus>{
+            'a-1': DnsPropagationStatus.timedOut,
+            'example.com|HTTPS': DnsPropagationStatus.propagated,
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Not visible everywhere yet'), findsOneWidget);
+    expect(find.text('Propagated'), findsOneWidget);
+    expect(find.text('Alias'), findsOneWidget);
+  });
+
+  testWidgets('import sheet previews and returns only new valid records', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    List<DnsRecord>? imported;
+    await tester.pumpWidget(
+      _app(
+        Builder(
+          builder: (context) => Center(
+            child: FilledButton(
+              onPressed: () async {
+                imported = await DnsZoneImportSheet.show(
+                  context,
+                  zoneName: 'example.com',
+                  existingRecords: const <DnsRecord>[
+                    DnsRecord(
+                      id: 'a-1',
+                      type: DnsRecordType.a,
+                      name: 'example.com',
+                      content: '192.0.2.1',
+                    ),
+                  ],
+                );
+              },
+              child: const Text('Open import'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open import'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('zone-file-input')),
+      '@ IN A 192.0.2.1\n'
+      'www IN A 192.0.2.300\n'
+      'api 300 IN AAAA 2001:db8::1\n'
+      '@ IN SOA ns. admin. 1 2 3 4 5\n',
+    );
+    await tester.tap(find.text('Preview'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('1 ready · 1 already exist · 1 invalid · 1 lines skipped'),
+      findsOneWidget,
+    );
+    expect(find.text('Enter a valid IPv4 address.'), findsOneWidget);
+    expect(find.text('Already exists, skipped'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('Import 1 record'));
+    await tester.pumpAndSettle();
+    expect(imported?.single.name, 'api.example.com');
+    expect(imported?.single.ttl, 300);
+  });
+
+  testWidgets('dashboard imports a zone file in one batch', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = BatchTestGateway();
+    await tester.pumpWidget(
+      _app(
+        CloudflareDnsDashboard(
+          gateway: gateway,
+          diagnostics: HealthyDiagnostics(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Zone file'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import zone file'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('zone-file-input')),
+      'www 300 IN CNAME @\n_dmarc IN TXT "v=DMARC1; p=none"\n',
+    );
+    await tester.tap(find.text('Preview'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import 2 records'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.batches, 1);
+    expect(gateway.created, 0);
+    expect(find.text('Imported 2 records'), findsOneWidget);
+    final listed = tester.widget<DnsRecordList>(find.byType(DnsRecordList));
+    expect(listed.records, hasLength(3));
+  });
+
+  testWidgets('dashboard copies the zone file', (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    final gateway = TestGateway(
+      zoneFuture: Future<List<DnsZone>>.value(const <DnsZone>[
+        DnsZone(id: 'zone-1', name: 'example.com'),
+      ]),
+    );
+    await tester.pumpWidget(
+      _app(
+        CloudflareDnsDashboard(
+          gateway: gateway,
+          diagnostics: HealthyDiagnostics(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Zone file'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Export zone file'));
+    await tester.pumpAndSettle();
+
+    expect(copied, contains('example.com.\t1\tIN\tA\t192.0.2.1'));
+    expect(find.text('Zone file with 1 records copied'), findsOneWidget);
+  });
+
+  testWidgets('dashboard tracks propagation after a save', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = BatchTestGateway();
+    final diagnostics = PropagatingDiagnostics();
+    await tester.pumpWidget(
+      _app(
+        CloudflareDnsDashboard(
+          gateway: gateway,
+          diagnostics: diagnostics,
+          propagationCheckInterval: const Duration(seconds: 1),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('192.0.2.1'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextFormField, '192.0.2.1'),
+      '192.0.2.2',
+    );
+    await tester.ensureVisible(find.text('Save record'));
+    await tester.tap(find.text('Save record'));
+    // Stay under the 1 s poll interval: the first poll does not match yet.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('Propagating'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.text('Propagated'), findsOneWidget);
+    expect(diagnostics.polls, 2);
+  });
 }
 
 Widget _app(Widget child) => MaterialApp(
@@ -568,4 +831,90 @@ class TestGateway implements CloudflareDnsGateway {
 
   @override
   Future<void> deleteRecord(String zoneId, String recordId) async {}
+}
+
+/// Resolvers see the saved record from the second poll on.
+class PropagatingDiagnostics extends HealthyDiagnostics {
+  var polls = 0;
+
+  @override
+  Future<List<DnsResolverComparison>> compareResolvers(
+    Iterable<DnsRecord> records, {
+    Map<String, Uri>? resolvers,
+  }) async {
+    polls++;
+    final record = records.single;
+    return <DnsResolverComparison>[
+      DnsResolverComparison(
+        name: record.name,
+        type: record.type,
+        answers: <String, List<DnsRecord>>{
+          'Cloudflare': <DnsRecord>[record],
+          'Google': polls > 1 ? <DnsRecord>[record] : const <DnsRecord>[],
+        },
+      ),
+    ];
+  }
+}
+
+/// In-memory gateway that supports batches and counts writes.
+class BatchTestGateway implements BatchCapableGateway {
+  final records = <DnsRecord>[
+    const DnsRecord(
+      id: 'a-1',
+      type: DnsRecordType.a,
+      name: 'example.com',
+      content: '192.0.2.1',
+      proxied: false,
+    ),
+  ];
+  var batches = 0;
+  var created = 0;
+
+  @override
+  Future<List<DnsZone>> listZones() async => const <DnsZone>[
+    DnsZone(id: 'zone-1', name: 'example.com'),
+  ];
+
+  @override
+  Future<List<DnsRecord>> listRecords(String zoneId) async => List.of(records);
+
+  @override
+  Future<DnsRecord> createRecord(String zoneId, DnsRecord record) async {
+    created++;
+    final saved = record.copyWith(id: 'new-${records.length}');
+    records.add(saved);
+    return saved;
+  }
+
+  @override
+  Future<DnsRecord> updateRecord(
+    String zoneId,
+    String recordId,
+    DnsRecord record,
+  ) async {
+    final saved = record.copyWith(id: recordId);
+    records[records.indexWhere((r) => r.id == recordId)] = saved;
+    return saved;
+  }
+
+  @override
+  Future<void> deleteRecord(String zoneId, String recordId) async {
+    records.removeWhere((r) => r.id == recordId);
+  }
+
+  @override
+  Future<DnsBatchResult> batch(
+    String zoneId, {
+    Iterable<DnsRecord> posts = const <DnsRecord>[],
+    Iterable<DnsRecord> patches = const <DnsRecord>[],
+    Iterable<String> deletes = const <String>[],
+  }) async {
+    batches++;
+    final added = <DnsRecord>[
+      for (final record in posts) record.copyWith(id: 'b-${records.length}'),
+    ];
+    records.addAll(added);
+    return DnsBatchResult(posts: added);
+  }
 }
