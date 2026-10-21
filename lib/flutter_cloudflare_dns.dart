@@ -7,6 +7,7 @@ export 'src/gateway/cloudflare_dns_gateway.dart';
 export 'src/gateway/direct_cloudflare_gateway.dart';
 export 'src/gateway/proxy_cloudflare_gateway.dart';
 export 'src/models/dns_health.dart';
+export 'src/models/dns_name.dart';
 export 'src/models/dns_record.dart';
 export 'src/models/dns_zone.dart';
 export 'src/models/dns_zone_file.dart';

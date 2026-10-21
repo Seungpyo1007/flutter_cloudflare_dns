@@ -440,8 +440,10 @@ host	IN	LOC	1 2 3
         'SVCB',
       ]);
       expect(records[0].name, 'example.com');
-      expect(records[0].ttl, 3600);
+      // Proxied records always use automatic TTL.
+      expect(records[0].ttl, 1);
       expect(records[0].proxied, isTrue);
+      expect(records[3].ttl, 60);
       expect(records[1].content, 'example.com');
       expect(records[1].proxied, isFalse);
       // A blank owner repeats the previous one; quoted strings concatenate.
@@ -474,9 +476,7 @@ host	IN	LOC	1 2 3
 
       expect(
         encoded,
-        contains(
-          'example.com.\t3600\tIN\tA\t192.0.2.1 ; cf_tags=cf-proxied:true',
-        ),
+        contains('example.com.\t1\tIN\tA\t192.0.2.1 ; cf_tags=cf-proxied:true'),
       );
       expect(
         encoded,

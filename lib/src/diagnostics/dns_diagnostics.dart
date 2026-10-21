@@ -42,8 +42,27 @@ class DnsDiagnostics {
   final Uri endpoint;
 
   /// Resolves [name] for one supported [type].
-  Future<List<DnsRecord>> lookup(String name, DnsRecordType type) =>
-      _lookupAt(endpoint, name, type);
+  ///
+  /// Returns only answers of [type]; CNAME records the resolver followed are
+  /// in [resolve]'s result. Throws [DnsLookupException] with status 3 when
+  /// the name does not exist.
+  Future<List<DnsRecord>> lookup(String name, DnsRecordType type) async {
+    final result = await resolve(name, type);
+    if (result.nxdomain) {
+      throw DnsLookupException(
+        name: name,
+        type: type,
+        status: 3,
+        message: 'DNS name does not exist.',
+      );
+    }
+    return result.records;
+  }
+
+  /// Resolves [name] for one supported [type], reporting NXDOMAIN, the CNAME
+  /// chain, and DNSSEC validation instead of throwing for a missing name.
+  Future<DnsLookupResult> resolve(String name, DnsRecordType type) =>
+      _resolveAt(endpoint, name, type);
 
   /// Public DNS-over-HTTPS JSON resolvers used by [compareResolvers].
   static final Map<String, Uri> publicResolvers = <String, Uri>{
@@ -74,16 +93,27 @@ class DnsDiagnostics {
     final failed = <String, Set<String>>{
       for (final key in targets.keys) key: <String>{},
     };
+    final nxdomain = <String, Set<String>>{
+      for (final key in targets.keys) key: <String>{},
+    };
+    final cnames = <String, Map<String, List<DnsRecord>>>{
+      for (final key in targets.keys) key: <String, List<DnsRecord>>{},
+    };
     await _limited(<Future<void> Function()>[
       for (final target in targets.entries)
         for (final resolver in endpoints.entries)
           () async {
             try {
-              answers[target.key]![resolver.key] = await _lookupAt(
+              final result = await _resolveAt(
                 resolver.value,
                 target.value.name,
                 target.value.type,
               );
+              answers[target.key]![resolver.key] = result.records;
+              if (result.nxdomain) nxdomain[target.key]!.add(resolver.key);
+              if (result.cnames.isNotEmpty) {
+                cnames[target.key]![resolver.key] = result.cnames;
+              }
             } on Object {
               answers[target.key]![resolver.key] = const <DnsRecord>[];
               failed[target.key]!.add(resolver.key);
@@ -102,23 +132,28 @@ class DnsDiagnostics {
               label: answers[target.key]![label] ?? const <DnsRecord>[],
           },
           failedResolvers: failed[target.key]!,
+          nxdomainResolvers: nxdomain[target.key]!,
+          cnames: cnames[target.key]!,
         ),
     ];
   }
 
-  /// Polls [compareResolvers] for [record] until every resolver returns it.
+  /// Polls [compareResolvers] for [record] until every resolver returns it,
+  /// or, with [removal], until no resolver returns it any more.
   ///
   /// Emits one comparison per poll, [interval] apart, and closes after the
-  /// first one that [DnsResolverComparison.matches] [record], or once
-  /// [timeout] has passed, even while a lookup is still running. When the
-  /// last comparison does not match, the change has not reached every
-  /// resolver yet. Cancelling the subscription stops polling. [record]'s name
-  /// must be fully qualified.
+  /// first one that [DnsResolverComparison.matches] [record] (with
+  /// [removal]: [DnsResolverComparison.lacks]), or once [timeout] has
+  /// passed, even while a lookup is still running. When the last comparison
+  /// does not satisfy that, the change has not reached every resolver yet.
+  /// Cancelling the subscription stops polling. [record]'s name must be
+  /// fully qualified.
   Stream<DnsResolverComparison> watchPropagation(
     DnsRecord record, {
     Duration interval = const Duration(seconds: 15),
     Duration timeout = const Duration(minutes: 10),
     Map<String, Uri>? resolvers,
+    bool removal = false,
   }) {
     var closed = false;
     Timer? next;
@@ -142,7 +177,9 @@ class DnsDiagnostics {
         if (closed) return;
         final comparison = comparisons.single;
         controller.add(comparison);
-        if (comparison.matches(record)) return finish();
+        if (removal ? comparison.lacks(record) : comparison.matches(record)) {
+          return finish();
+        }
       } on Object catch (error, stackTrace) {
         if (closed) return;
         controller.addError(error, stackTrace);
@@ -181,7 +218,7 @@ class DnsDiagnostics {
     ]);
   }
 
-  Future<List<DnsRecord>> _lookupAt(
+  Future<DnsLookupResult> _resolveAt(
     Uri endpoint,
     String name,
     DnsRecordType type,
@@ -211,7 +248,16 @@ class DnsDiagnostics {
         message: 'DNS lookup failed with HTTP ${response.statusCode}.',
       );
     }
-    final json = jsonDecode(response.body);
+    final Object? json;
+    try {
+      json = jsonDecode(response.body);
+    } on FormatException {
+      throw DnsLookupException(
+        name: name,
+        type: type,
+        message: 'Invalid DNS response.',
+      );
+    }
     if (json is! Map) {
       throw DnsLookupException(
         name: name,
@@ -220,32 +266,47 @@ class DnsDiagnostics {
       );
     }
     final status = _asInt(json['Status']) ?? -1;
+    // NXDOMAIN is an answer, not a failure: the name does not exist.
+    if (status == 3) {
+      return DnsLookupResult(
+        records: const <DnsRecord>[],
+        nxdomain: true,
+        authenticated: json['AD'] == true,
+      );
+    }
     if (status != 0) {
       throw DnsLookupException(
         name: name,
         type: type,
         status: status,
-        message: status == 3
-            ? 'DNS name does not exist.'
-            : 'DNS returned status $status.',
+        message: 'DNS returned status $status.',
       );
     }
+    final records = <DnsRecord>[];
+    final cnames = <DnsRecord>[];
     final answers = json['Answer'];
-    if (answers is! List) return const <DnsRecord>[];
-    return answers
-        .whereType<Map>()
-        .map((answer) {
-          final answerType = _typeFromCode(_asInt(answer['type'])) ?? type;
-          return DnsRecord.fromJson(<String, Object?>{
-            'name':
-                answer['name']?.toString().replaceFirst(RegExp(r'\.$'), '') ??
-                name,
-            'type': answerType.wireName,
-            'content': answer['data']?.toString() ?? '',
-            'ttl': _asInt(answer['TTL']) ?? 1,
-          });
-        })
-        .toList(growable: false);
+    for (final answer in answers is List ? answers : const <Object?>[]) {
+      if (answer is! Map) continue;
+      // DNAME, RRSIG, and other types a resolver may add are ignored. An
+      // answer without a type code is taken as the queried type.
+      final code = _asInt(answer['type']);
+      final answerType = code == null ? type : _typeFromCode(code);
+      if (answerType == null) continue;
+      if (answerType != type && answerType != DnsRecordType.cname) continue;
+      final record = DnsRecord.fromJson(<String, Object?>{
+        'name':
+            answer['name']?.toString().replaceFirst(RegExp(r'\.$'), '') ?? name,
+        'type': answerType.wireName,
+        'content': answer['data']?.toString() ?? '',
+        'ttl': _asInt(answer['TTL']) ?? 1,
+      });
+      (answerType == type ? records : cnames).add(record);
+    }
+    return DnsLookupResult(
+      records: records,
+      cnames: cnames,
+      authenticated: json['AD'] == true,
+    );
   }
 
   /// Checks public answers and compares them with optional expected records.
@@ -286,19 +347,34 @@ class DnsDiagnostics {
 
     final answers = <String, List<DnsRecord>>{};
     final issues = <DnsIssue>[];
+    var succeeded = 0;
+    var authenticated = 0;
     await _limited(<Future<void> Function()>[
       for (final entry in queries.entries)
         () async {
           try {
-            answers[entry.key] = await lookup(
-              entry.value.name,
-              entry.value.type,
-            );
+            final result = await resolve(entry.value.name, entry.value.type);
+            answers[entry.key] = result.records;
+            succeeded++;
+            if (result.authenticated) authenticated++;
+            if (result.nxdomain) {
+              issues.add(
+                DnsIssue(
+                  code: 'nxdomain',
+                  message:
+                      '${entry.value.name} ${entry.value.type.wireName}: '
+                      'DNS name does not exist.',
+                  severity: DnsIssueSeverity.error,
+                  recordName: entry.value.name,
+                  recordType: entry.value.type,
+                ),
+              );
+            }
           } on DnsLookupException catch (error) {
             answers[entry.key] = const <DnsRecord>[];
             issues.add(
               DnsIssue(
-                code: error.status == 3 ? 'nxdomain' : 'lookup_failed',
+                code: 'lookup_failed',
                 message:
                     '${entry.value.name} ${entry.value.type.wireName}: ${error.message}',
                 severity: DnsIssueSeverity.error,
@@ -372,6 +448,7 @@ class DnsDiagnostics {
       checkedAt: DateTime.now().toUtc(),
       answers: answers,
       issues: issues,
+      dnssecValidated: succeeded == 0 ? null : authenticated == succeeded,
     );
   }
 }
@@ -402,7 +479,8 @@ class DnsLookupException implements Exception {
   String toString() => message;
 }
 
-int? _asInt(Object? value) => value is int ? value : int.tryParse('$value');
+int? _asInt(Object? value) =>
+    value is int ? value : int.tryParse('${value ?? ''}');
 
 String _bareName(String name) =>
     name.trim().toLowerCase().replaceFirst(RegExp(r'\.$'), '');

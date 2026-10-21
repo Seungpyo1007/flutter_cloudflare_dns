@@ -9,6 +9,7 @@ import '../models/dns_health.dart';
 import '../models/dns_record.dart';
 import '../models/dns_zone.dart';
 import '../models/dns_zone_file.dart';
+import '../validation/dns_record_validator.dart';
 import 'dns_record_editor_sheet.dart';
 import 'dns_record_list.dart';
 import 'dns_sync_status_icon.dart';
@@ -27,7 +28,9 @@ class CloudflareDnsDashboard extends StatefulWidget {
     this.propagationCheckInterval = const Duration(seconds: 15),
     this.propagationTimeout = const Duration(minutes: 10),
     this.maxHealthCheckRecords = 100,
-  });
+    this.recordPolicy = const DnsRecordPolicy(),
+    this.importBatchSize = 200,
+  }) : assert(importBatchSize > 0);
 
   /// DNS gateway used for records and mutations.
   final CloudflareDnsGateway gateway;
@@ -53,6 +56,17 @@ class CloudflareDnsDashboard extends StatefulWidget {
   /// resolvers" still checks every record.
   final int maxHealthCheckRecords;
 
+  /// Plan limits the editor and zone file import validate against. Use
+  /// [DnsRecordPolicy.enterprise] for Enterprise zones.
+  final DnsRecordPolicy recordPolicy;
+
+  /// Most records a zone file import sends in one batch request, when the
+  /// gateway is a [BatchCapableGateway]. Cloudflare allows 200 per batch on
+  /// Free plans and 3,500 on paid plans. Each batch is atomic, but an import
+  /// split into several batches is not: earlier batches stay applied when a
+  /// later one fails.
+  final int importBatchSize;
+
   @override
   State<CloudflareDnsDashboard> createState() => _CloudflareDnsDashboardState();
 }
@@ -73,6 +87,9 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   String? _error;
   String? _healthError;
   final _propagation = <String, DnsPropagationStatus>{};
+  // Deleted records being watched until public resolvers drop them.
+  final _removals =
+      <String, ({DnsRecord record, DnsPropagationStatus status})>{};
   final _watches = <String, StreamSubscription<DnsResolverComparison>>{};
 
   DnsDiagnostics? _ownedDiagnostics;
@@ -204,6 +221,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     setState(() {
       _selectedZone = selected;
       _propagation.clear();
+      _removals.clear();
       _filter = _RecordFilter.all;
       _search.clear();
       _query = '';
@@ -219,6 +237,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       context,
       zoneName: zone.name,
       initialRecord: initial,
+      existingRecords: _records,
+      policy: widget.recordPolicy,
     );
     if (record == null || !mounted) return;
     setState(() => _writing = true);
@@ -262,6 +282,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     setState(() => _writing = true);
     try {
       await widget.gateway.deleteRecord(zone.id, record.id!);
+      _watchPropagation(record, zone, removal: true);
       await _loadRecords();
     } on Object catch (error) {
       if (mounted) _showError(error);
@@ -270,13 +291,18 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     }
   }
 
-  /// Polls public resolvers for [record] and tracks it in [_propagation].
-  void _watchPropagation(DnsRecord record, DnsZone zone) {
+  /// Polls public resolvers for [record] and tracks it in [_propagation], or
+  /// with [removal], in [_removals] until resolvers no longer return it.
+  void _watchPropagation(
+    DnsRecord record,
+    DnsZone zone, {
+    bool removal = false,
+  }) {
     // Proxied records answer with Cloudflare's addresses, never their own,
     // and an apex CNAME is flattened into the target's A and AAAA records.
     if (record.proxied == true || !mounted) return;
     if (record.type == DnsRecordType.cname && _isApex(record, zone)) return;
-    final key = dnsPropagationKey(record);
+    final key = '${removal ? 'removed:' : ''}${dnsPropagationKey(record)}';
     _watches.remove(key)?.cancel();
     final name = record.name.trim();
     final fqdn = name.isEmpty || name == '@'
@@ -285,31 +311,47 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
         ? name
         : '$name.${zone.name}';
     final watched = record.copyWith(name: fqdn);
-    setState(() => _propagation[key] = DnsPropagationStatus.propagating);
+    void update(DnsPropagationStatus status) {
+      if (removal) {
+        _removals[key] = (record: watched, status: status);
+      } else {
+        _propagation[key] = status;
+      }
+    }
+
+    DnsPropagationStatus? current() =>
+        removal ? _removals[key]?.status : _propagation[key];
+
+    setState(() => update(DnsPropagationStatus.propagating));
     _watches[key] = _diagnostics
         .watchPropagation(
           watched,
           interval: widget.propagationCheckInterval,
           timeout: widget.propagationTimeout,
+          removal: removal,
         )
         .listen(
           (comparison) {
-            if (mounted && comparison.matches(watched)) {
-              setState(
-                () => _propagation[key] = DnsPropagationStatus.propagated,
-              );
+            final done = removal
+                ? comparison.lacks(watched)
+                : comparison.matches(watched);
+            if (mounted && done) {
+              setState(() => update(DnsPropagationStatus.propagated));
             }
           },
           onError: (Object _) {},
           onDone: () {
             _watches.remove(key);
-            if (mounted &&
-                _propagation[key] == DnsPropagationStatus.propagating) {
-              setState(() => _propagation[key] = DnsPropagationStatus.timedOut);
+            if (mounted && current() == DnsPropagationStatus.propagating) {
+              setState(() => update(DnsPropagationStatus.timedOut));
             }
           },
         );
   }
+
+  void _clearFinishedRemovals() => _removals.removeWhere(
+    (_, removal) => removal.status != DnsPropagationStatus.propagating,
+  );
 
   void _stopWatches() {
     for (final watch in _watches.values) {
@@ -339,22 +381,43 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       context,
       zoneName: zone.name,
       existingRecords: _records,
+      policy: widget.recordPolicy,
     );
     if (records == null || records.isEmpty || !mounted) return;
     setState(() => _writing = true);
     final gateway = widget.gateway;
     var imported = 0;
-    Object? firstError;
+    final failures = <({DnsRecord record, String message})>[];
     try {
       if (gateway is BatchCapableGateway) {
-        // One atomic request: either every record is created or none is.
-        try {
-          imported = (await gateway.batch(
-            zone.id,
-            posts: records,
-          )).posts.length;
-        } on Object catch (error) {
-          firstError = error;
+        // Each batch is atomic: either all of its records are created or
+        // none is. Stop at the first failed batch.
+        for (
+          var start = 0;
+          start < records.length;
+          start += widget.importBatchSize
+        ) {
+          final chunk = records.sublist(
+            start,
+            (start + widget.importBatchSize).clamp(0, records.length),
+          );
+          try {
+            imported += (await gateway.batch(
+              zone.id,
+              posts: chunk,
+            )).posts.length;
+          } on Object catch (error) {
+            final message = _safeMessage(error);
+            failures.addAll(<({DnsRecord record, String message})>[
+              for (final record in chunk) (record: record, message: message),
+              for (final record in records.skip(start + chunk.length))
+                (
+                  record: record,
+                  message: 'Not sent after an earlier batch failed.',
+                ),
+            ]);
+            break;
+          }
         }
       } else {
         for (final record in records) {
@@ -362,7 +425,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
             await gateway.createRecord(zone.id, record);
             imported++;
           } on Object catch (error) {
-            firstError ??= error;
+            failures.add((record: record, message: _safeMessage(error)));
           }
         }
       }
@@ -371,14 +434,21 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       if (mounted) setState(() => _writing = false);
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          firstError == null
-              ? 'Imported $imported records'
-              : 'Imported $imported of ${records.length} records. '
-                    '${_safeMessage(firstError)}',
-        ),
+    if (failures.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Imported $imported records')));
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (_) => _ImportResultSheet(
+        imported: imported,
+        total: records.length,
+        failures: failures,
       ),
     );
   }
@@ -539,7 +609,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                                 if (_selectedZone != null) ...<Widget>[
                                   const SizedBox(height: 10),
                                   Align(
-                                    alignment: Alignment.centerRight,
+                                    alignment: AlignmentDirectional.centerEnd,
                                     child: FilledButton.tonalIcon(
                                       onPressed: _comparing || _records.isEmpty
                                           ? null
@@ -604,6 +674,16 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
                                   },
                                 ),
                                 const SizedBox(height: 14),
+                                if (_removals.isNotEmpty) ...<Widget>[
+                                  _RemovalList(
+                                    removals: _removals.values.toList(
+                                      growable: false,
+                                    ),
+                                    onDismiss: () =>
+                                        setState(_clearFinishedRemovals),
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
                               ],
                             ),
                           ),
@@ -637,8 +717,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
             ),
           ),
         ),
-        Positioned(
-          right: 20,
+        PositionedDirectional(
+          end: 20,
           bottom: 20,
           child: SafeArea(
             child: FloatingActionButton.extended(
@@ -804,14 +884,151 @@ class _ResolverComparisonSheet extends StatelessWidget {
                 for (final entry in comparison.answers.entries)
                   '${entry.key}: ${comparison.failedResolvers.contains(entry.key)
                       ? 'lookup failed'
+                      : comparison.nxdomainResolvers.contains(entry.key)
+                      ? 'name does not exist'
                       : entry.value.isEmpty
                       ? 'no answer'
-                      : entry.value.map((r) => r.content).join(', ')}',
+                      : <String>[for (final cname in comparison.cnames[entry.key] ?? const <DnsRecord>[]) '→ ${cname.content}', entry.value.map((r) => r.content).join(', ')].join(' ')}',
               ].join('\n'),
             ),
             isThreeLine: comparison.answers.length > 1,
           ),
       ],
+    );
+  }
+}
+
+/// Per-record results of a zone file import that did not fully succeed.
+class _ImportResultSheet extends StatelessWidget {
+  const _ImportResultSheet({
+    required this.imported,
+    required this.total,
+    required this.failures,
+  });
+
+  final int imported;
+  final int total;
+  final List<({DnsRecord record, String message})> failures;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return ListView.builder(
+      shrinkWrap: true,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      itemCount: failures.length + 1,
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Imported $imported of $total records',
+                  style: textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${failures.length} records were not created.',
+                  style: textTheme.bodyMedium?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        final failure = failures[index - 1];
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.error_outline_rounded, color: colors.error),
+          title: Text(
+            '${failure.record.type.wireName} ${failure.record.name}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(failure.message),
+        );
+      },
+    );
+  }
+}
+
+/// Deleted records still being watched on public resolvers.
+class _RemovalList extends StatelessWidget {
+  const _RemovalList({required this.removals, required this.onDismiss});
+
+  final List<({DnsRecord record, DnsPropagationStatus status})> removals;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final finished = removals.any(
+      (removal) => removal.status != DnsPropagationStatus.propagating,
+    );
+    return Material(
+      color: colors.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(24),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Deleted records',
+                    style: textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (finished)
+                  TextButton(onPressed: onDismiss, child: const Text('Clear')),
+              ],
+            ),
+            for (final removal in removals)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  children: <Widget>[
+                    DnsSyncStatusIcon(
+                      active:
+                          removal.status == DnsPropagationStatus.propagating,
+                      icon: switch (removal.status) {
+                        DnsPropagationStatus.propagating => Icons.sync_rounded,
+                        DnsPropagationStatus.propagated =>
+                          Icons.check_circle_rounded,
+                        DnsPropagationStatus.timedOut =>
+                          Icons.warning_amber_rounded,
+                      },
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${removal.record.type.wireName} '
+                        '${removal.record.name}: ${switch (removal.status) {
+                          DnsPropagationStatus.propagating => 'removing from public DNS',
+                          DnsPropagationStatus.propagated => 'gone from public DNS',
+                          DnsPropagationStatus.timedOut => 'still visible on some resolvers',
+                        }}',
+                        style: textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -827,11 +1044,11 @@ class _CloudflareMark extends StatelessWidget {
       height: 44,
       decoration: BoxDecoration(
         color: colors.primaryContainer,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(16),
-          topRight: Radius.circular(16),
-          bottomLeft: Radius.circular(16),
-          bottomRight: Radius.circular(6),
+        borderRadius: const BorderRadiusDirectional.only(
+          topStart: Radius.circular(16),
+          topEnd: Radius.circular(16),
+          bottomStart: Radius.circular(16),
+          bottomEnd: Radius.circular(6),
         ),
       ),
       child: Icon(Icons.cloud_rounded, color: colors.onPrimaryContainer),
@@ -855,7 +1072,7 @@ class _ZoneSelector extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+          padding: const EdgeInsetsDirectional.fromSTEB(18, 16, 14, 16),
           child: Row(
             children: <Widget>[
               Container(

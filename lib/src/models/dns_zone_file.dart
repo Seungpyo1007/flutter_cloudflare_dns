@@ -1,3 +1,4 @@
+import 'dns_name.dart';
 import 'dns_record.dart';
 import 'dns_text.dart';
 
@@ -38,20 +39,22 @@ class DnsZoneFileResult {
 /// Reads and writes BIND zone files (RFC 1035 master file format).
 ///
 /// The output matches Cloudflare's own DNS export: absolute names, `IN`, and
-/// a `cf_tags=cf-proxied:...` comment on proxiable records, so files move
-/// between this package and the Cloudflare dashboard in both directions.
+/// record comments and tags in a trailing `; comment cf_tags=a,b:c` comment,
+/// including the reserved `cf-proxied:true|false` tag on proxiable records,
+/// so files move between this package and the Cloudflare dashboard in both
+/// directions.
 abstract final class DnsZoneFile {
   /// Writes [records] as a zone file for [origin], such as `example.com`.
   ///
-  /// Names and targets are written fully qualified. Cloudflare's automatic
-  /// TTL is written as `1`.
+  /// Names and targets are written fully qualified, in Punycode. Cloudflare's
+  /// automatic TTL is written as `1`.
   static String encode(Iterable<DnsRecord> records, {required String origin}) {
     final zone = _trimDot(origin);
     final b = StringBuffer()
       ..writeln(';; Zone file for $zone, exported by flutter_cloudflare_dns.')
       ..writeln('\$ORIGIN $zone.');
     for (final record in records) {
-      final owner = '${_absolute(record.name, zone)}.';
+      final owner = '${DnsName.toAscii(_absolute(record.name, zone))}.';
       final rdata = switch (record.type) {
         DnsRecordType.a || DnsRecordType.aaaa => record.content.trim(),
         DnsRecordType.cname ||
@@ -72,15 +75,9 @@ abstract final class DnsZoneFile {
                   '${record.svcParams ?? ''}'
               .trim(),
       };
-      final proxiable = switch (record.type) {
-        DnsRecordType.a || DnsRecordType.aaaa || DnsRecordType.cname => true,
-        _ => false,
-      };
-      final tags = proxiable && record.proxied != null
-          ? ' ; cf_tags=cf-proxied:${record.proxied}'
-          : '';
       b.writeln(
-        '$owner\t${record.ttl}\tIN\t${record.type.wireName}\t$rdata$tags',
+        '$owner\t${record.ttl}\tIN\t${record.type.wireName}\t$rdata'
+        '${_attributes(record)}',
       );
     }
     return b.toString();
@@ -90,7 +87,9 @@ abstract final class DnsZoneFile {
   ///
   /// Handles `$ORIGIN`, `$TTL`, `@`, blank owners, parentheses, comments,
   /// and quoted, multi-string TXT values. Records without a TTL get the
-  /// `$TTL` value, or [defaultTtl] (Cloudflare's automatic TTL) without one.
+  /// `$TTL` value, or [defaultTtl] (Cloudflare's automatic TTL) without one;
+  /// proxied records always get automatic TTL. The trailing comment becomes
+  /// the record's comment and tags (see [encode]).
   /// Unsupported types such as SOA are reported in
   /// [DnsZoneFileResult.issues] and skipped.
   static DnsZoneFileResult parse(
@@ -189,6 +188,56 @@ abstract final class DnsZoneFile {
 
   static const _classes = <String>{'IN', 'CH', 'HS', 'CS'};
 
+  /// Writes [record]'s comment and tags as Cloudflare does:
+  /// `; comment cf_tags=tag,name:value,cf-proxied:true`. A comment that
+  /// itself contains `cf_tags=` gets an extra `cf_tags=` at the end, so the
+  /// last one marks the tags.
+  static String _attributes(DnsRecord record) {
+    final proxiable = switch (record.type) {
+      DnsRecordType.a || DnsRecordType.aaaa || DnsRecordType.cname => true,
+      _ => false,
+    };
+    final tags = <String>[
+      ...record.tags,
+      if (proxiable && record.proxied != null) 'cf-proxied:${record.proxied}',
+    ];
+    final comment = (record.comment ?? '').replaceAll(RegExp(r'[\r\n]+'), ' ');
+    final parts = <String>[
+      if (comment.trim().isNotEmpty) comment.trim(),
+      if (tags.isNotEmpty || comment.contains('cf_tags='))
+        'cf_tags=${tags.join(',')}',
+    ];
+    return parts.isEmpty ? '' : ' ; ${parts.join(' ')}';
+  }
+
+  /// Reads a record's trailing zone-file comment, the inverse of
+  /// [_attributes]. Reserved `cf-` tags are not returned as tags.
+  static ({String? comment, List<String> tags, String? proxied})
+  _readAttributes(String text) {
+    final marker = text.lastIndexOf('cf_tags=');
+    final commentText = (marker < 0 ? text : text.substring(0, marker)).trim();
+    final tagText = marker < 0 ? '' : text.substring(marker + 8).trim();
+    String? proxied;
+    final tags = <String>[];
+    for (final tag in tagText.split(',')) {
+      final value = tag.trim();
+      if (value.isEmpty) continue;
+      final reserved = RegExp(
+        r'^cf-proxied:(true|false)$',
+      ).firstMatch(value.toLowerCase());
+      if (reserved != null) {
+        proxied = reserved.group(1);
+      } else if (!value.toLowerCase().startsWith('cf-')) {
+        tags.add(value);
+      }
+    }
+    return (
+      comment: commentText.isEmpty ? null : commentText,
+      tags: tags,
+      proxied: proxied,
+    );
+  }
+
   static DnsRecord? _record(
     DnsRecordType type,
     String name,
@@ -199,9 +248,27 @@ abstract final class DnsZoneFile {
   ) {
     String at(int i) => rdata[i].text;
     int? number(int i) => int.tryParse(at(i));
-    final proxied = RegExp(
-      r'cf-proxied:(true|false)',
-    ).firstMatch(comment)?.group(1);
+    final attributes = _readAttributes(comment);
+    final proxied = attributes.proxied;
+    final record = _rdata(type, name, ttl, rdata, zone, at, number, proxied);
+    return record?.copyWith(
+      comment: attributes.comment,
+      tags: attributes.tags,
+      // Cloudflare always uses automatic TTL for proxied records.
+      ttl: record.proxied == true ? 1 : null,
+    );
+  }
+
+  static DnsRecord? _rdata(
+    DnsRecordType type,
+    String name,
+    int ttl,
+    List<_Token> rdata,
+    String zone,
+    String Function(int) at,
+    int? Function(int) number,
+    String? proxied,
+  ) {
     switch (type) {
       case DnsRecordType.a || DnsRecordType.aaaa:
         if (rdata.length != 1) return null;
@@ -386,7 +453,7 @@ abstract final class DnsZoneFile {
 
   /// Hostnames from the Cloudflare API are already fully qualified.
   static String _fqdn(String value, String zone) {
-    final name = value.trim();
+    final name = DnsName.toAscii(value);
     if (name == '@') return '$zone.';
     return name.endsWith('.') ? name : '$name.';
   }

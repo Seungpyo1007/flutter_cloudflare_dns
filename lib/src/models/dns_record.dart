@@ -1,3 +1,4 @@
+import 'dns_name.dart';
 import 'dns_text.dart';
 
 /// DNS record types supported by the package.
@@ -373,49 +374,66 @@ class DnsRecord {
   final String? svcParams;
 
   /// Serializes this record for the Cloudflare DNS API.
+  ///
+  /// Internationalized names and targets are sent in Punycode, and fields
+  /// without a value are left out.
   Map<String, Object?> toCloudflareJson() {
     final json = <String, Object?>{
       'type': type.wireName,
-      'name': name,
+      'name': DnsName.toAscii(name),
       'ttl': ttl,
       // An empty comment and empty tags are sent on purpose: they clear the
       // old values on PATCH.
       if (comment != null) 'comment': comment,
       'tags': tags,
     };
+    Map<String, Object?> data(Map<String, Object?> fields) => <String, Object?>{
+      for (final field in fields.entries)
+        if (field.value != null) field.key: field.value,
+    };
+    final host = DnsName.toAscii(content);
     switch (type) {
       case DnsRecordType.srv:
-        json['data'] = <String, Object?>{
+        json['data'] = data(<String, Object?>{
           'priority': priority,
           'weight': weight,
           'port': port,
-          'target': target,
-        };
+          'target': target == null ? null : DnsName.toAscii(target!),
+        });
       case DnsRecordType.caa:
-        json['data'] = <String, Object?>{
+        json['data'] = data(<String, Object?>{
           'flags': caaFlags,
           'tag': caaTag,
           'value': caaValue,
-        };
+        });
       case DnsRecordType.https || DnsRecordType.svcb:
-        json['data'] = <String, Object?>{
+        json['data'] = data(<String, Object?>{
           'priority': priority,
-          'target': target,
+          'target': target == null ? null : DnsName.toAscii(target!),
           'value': svcParams ?? '',
-        };
+        });
       case DnsRecordType.mx:
-        json['content'] = content;
-        json['priority'] = priority;
-      case DnsRecordType.a || DnsRecordType.aaaa || DnsRecordType.cname:
+        json['content'] = host;
+        if (priority != null) json['priority'] = priority;
+      case DnsRecordType.cname:
+        json['content'] = host;
+        if (proxied != null) json['proxied'] = proxied;
+      case DnsRecordType.a || DnsRecordType.aaaa:
         json['content'] = content;
         if (proxied != null) json['proxied'] = proxied;
-      case DnsRecordType.txt || DnsRecordType.ns || DnsRecordType.ptr:
+      case DnsRecordType.ns || DnsRecordType.ptr:
+        json['content'] = host;
+      case DnsRecordType.txt:
         json['content'] = content;
     }
     return json;
   }
 
   /// Returns an updated copy.
+  ///
+  /// Omitted and null arguments keep their value. To clear a nullable
+  /// field, name it in [clear], for example
+  /// `copyWith(clear: {DnsRecordField.comment})`.
   DnsRecord copyWith({
     String? id,
     DnsRecordType? type,
@@ -433,24 +451,43 @@ class DnsRecord {
     String? caaTag,
     String? caaValue,
     String? svcParams,
+    Set<DnsRecordField> clear = const <DnsRecordField>{},
   }) {
     return DnsRecord(
-      id: id ?? this.id,
+      id: clear.contains(DnsRecordField.id) ? null : id ?? this.id,
       type: type ?? this.type,
       name: name ?? this.name,
       content: content ?? this.content,
       ttl: ttl ?? this.ttl,
-      proxied: proxied ?? this.proxied,
-      comment: comment ?? this.comment,
+      proxied: clear.contains(DnsRecordField.proxied)
+          ? null
+          : proxied ?? this.proxied,
+      comment: clear.contains(DnsRecordField.comment)
+          ? null
+          : comment ?? this.comment,
       tags: tags ?? this.tags,
-      priority: priority ?? this.priority,
-      weight: weight ?? this.weight,
-      port: port ?? this.port,
-      target: target ?? this.target,
-      caaFlags: caaFlags ?? this.caaFlags,
-      caaTag: caaTag ?? this.caaTag,
-      caaValue: caaValue ?? this.caaValue,
-      svcParams: svcParams ?? this.svcParams,
+      priority: clear.contains(DnsRecordField.priority)
+          ? null
+          : priority ?? this.priority,
+      weight: clear.contains(DnsRecordField.weight)
+          ? null
+          : weight ?? this.weight,
+      port: clear.contains(DnsRecordField.port) ? null : port ?? this.port,
+      target: clear.contains(DnsRecordField.target)
+          ? null
+          : target ?? this.target,
+      caaFlags: clear.contains(DnsRecordField.caaFlags)
+          ? null
+          : caaFlags ?? this.caaFlags,
+      caaTag: clear.contains(DnsRecordField.caaTag)
+          ? null
+          : caaTag ?? this.caaTag,
+      caaValue: clear.contains(DnsRecordField.caaValue)
+          ? null
+          : caaValue ?? this.caaValue,
+      svcParams: clear.contains(DnsRecordField.svcParams)
+          ? null
+          : svcParams ?? this.svcParams,
     );
   }
 
@@ -488,10 +525,10 @@ String _canonicalCaa(int? flags, String? tag, String? value) {
       '${property == 'iodef' ? text : text.toLowerCase()}';
 }
 
-/// A host name for comparison: trimmed, lowercase, without a trailing dot.
+/// A host name for comparison: Punycode, lowercase, without a trailing dot.
 /// The root name `.` stays as it is.
 String _host(String value) {
-  final name = value.trim().toLowerCase();
+  final name = DnsName.toAscii(value).toLowerCase();
   return name.length > 1 && name.endsWith('.')
       ? name.substring(0, name.length - 1)
       : name;
@@ -512,6 +549,8 @@ String _canonicalIpv6(String value) {
   }
 }
 
+/// Marks a [DnsRecord.copyWith] argument that was not passed.
+
 Map<String, Object?>? _objectMap(Object? value) {
   if (value is! Map) return null;
   return value.map((key, item) => MapEntry(key.toString(), item));
@@ -531,3 +570,39 @@ bool? _asBool(Object? value, String field) => switch (value) {
   final String text when text.trim().toLowerCase() == 'false' => false,
   _ => throw FormatException('Invalid boolean for $field: $value'),
 };
+
+/// Nullable [DnsRecord] fields that [DnsRecord.copyWith] can clear.
+enum DnsRecordField {
+  /// [DnsRecord.id].
+  id,
+
+  /// [DnsRecord.proxied].
+  proxied,
+
+  /// [DnsRecord.comment].
+  comment,
+
+  /// [DnsRecord.priority].
+  priority,
+
+  /// [DnsRecord.weight].
+  weight,
+
+  /// [DnsRecord.port].
+  port,
+
+  /// [DnsRecord.target].
+  target,
+
+  /// [DnsRecord.caaFlags].
+  caaFlags,
+
+  /// [DnsRecord.caaTag].
+  caaTag,
+
+  /// [DnsRecord.caaValue].
+  caaValue,
+
+  /// [DnsRecord.svcParams].
+  svcParams,
+}
