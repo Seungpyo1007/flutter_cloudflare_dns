@@ -26,6 +26,7 @@ class CloudflareDnsDashboard extends StatefulWidget {
     this.padding = const EdgeInsets.fromLTRB(20, 8, 20, 120),
     this.propagationCheckInterval = const Duration(seconds: 15),
     this.propagationTimeout = const Duration(minutes: 10),
+    this.maxHealthCheckRecords = 100,
   });
 
   /// DNS gateway used for records and mutations.
@@ -47,6 +48,11 @@ class CloudflareDnsDashboard extends StatefulWidget {
   /// How long a saved record is watched before it shows as not propagated.
   final Duration propagationTimeout;
 
+  /// Most DNS-only records the automatic health check looks up, apex records
+  /// first. Larger zones get a `check_limited` info issue; "Compare
+  /// resolvers" still checks every record.
+  final int maxHealthCheckRecords;
+
   @override
   State<CloudflareDnsDashboard> createState() => _CloudflareDnsDashboardState();
 }
@@ -58,6 +64,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   DnsHealthReport? _report;
   _RecordFilter _filter = _RecordFilter.all;
   final _search = TextEditingController();
+  String _query = '';
+  Timer? _searchDebounce;
   bool _comparing = false;
   bool _loading = true;
   bool _writing = false;
@@ -81,6 +89,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
   @override
   void dispose() {
     _stopWatches();
+    _searchDebounce?.cancel();
     _ownedDiagnostics?.close();
     _search.dispose();
     super.dispose();
@@ -139,13 +148,40 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       _healthError = null;
     });
     try {
-      final expected = _records.where((record) => record.proxied != true);
+      // Apex records first: they matter most when the check is capped.
+      final candidates =
+          _records.where((record) => record.proxied != true).toList()..sort(
+            (a, b) =>
+                (_isApex(a, zone) ? 0 : 1).compareTo(_isApex(b, zone) ? 0 : 1),
+          );
+      final expected = candidates.take(widget.maxHealthCheckRecords).toList();
       final report = await _diagnostics.check(
         zone.name,
         types: const <DnsRecordType>[],
         expectedRecords: expected,
       );
-      if (mounted) setState(() => _report = report);
+      final skipped = candidates.length - expected.length;
+      if (mounted) {
+        setState(
+          () => _report = skipped <= 0
+              ? report
+              : DnsHealthReport(
+                  domain: report.domain,
+                  checkedAt: report.checkedAt,
+                  answers: report.answers,
+                  issues: <DnsIssue>[
+                    ...report.issues,
+                    DnsIssue(
+                      code: 'check_limited',
+                      message:
+                          'Checked ${expected.length} of '
+                          '${candidates.length} DNS-only records.',
+                      severity: DnsIssueSeverity.info,
+                    ),
+                  ],
+                ),
+        );
+      }
     } on Object catch (error) {
       if (mounted) setState(() => _healthError = _safeMessage(error));
     } finally {
@@ -159,42 +195,9 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       context: context,
       showDragHandle: true,
       useSafeArea: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                child: Text(
-                  'Choose a zone',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              for (final zone in _zones)
-                ListTile(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  leading: CircleAvatar(
-                    child: Text(zone.name.characters.first.toUpperCase()),
-                  ),
-                  title: Text(zone.name),
-                  subtitle: Text(zone.status ?? 'unknown'),
-                  trailing: zone == _selectedZone
-                      ? const Icon(Icons.check_circle_rounded)
-                      : null,
-                  selected: zone == _selectedZone,
-                  onTap: () => Navigator.pop(context, zone),
-                ),
-            ],
-          ),
-        ),
-      ),
+      isScrollControlled: true,
+      builder: (context) =>
+          _ZonePickerSheet(zones: _zones, selected: _selectedZone),
     );
     if (selected == null || selected == _selectedZone || !mounted) return;
     _stopWatches();
@@ -203,6 +206,7 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
       _propagation.clear();
       _filter = _RecordFilter.all;
       _search.clear();
+      _query = '';
       _report = null;
     });
     await _loadRecords();
@@ -268,8 +272,10 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
 
   /// Polls public resolvers for [record] and tracks it in [_propagation].
   void _watchPropagation(DnsRecord record, DnsZone zone) {
-    // Proxied records answer with Cloudflare's addresses, never their own.
+    // Proxied records answer with Cloudflare's addresses, never their own,
+    // and an apex CNAME is flattened into the target's A and AAAA records.
     if (record.proxied == true || !mounted) return;
+    if (record.type == DnsRecordType.cname && _isApex(record, zone)) return;
     final key = dnsPropagationKey(record);
     _watches.remove(key)?.cancel();
     final name = record.name.trim();
@@ -403,6 +409,13 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     );
   }
 
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (mounted) setState(() => _query = value.trim().toLowerCase());
+    });
+  }
+
   void _showError(Object error) {
     ScaffoldMessenger.of(
       context,
@@ -416,7 +429,8 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
     final services = _records
         .where((record) => record.type == DnsRecordType.srv)
         .length;
-    final query = _search.text.trim().toLowerCase();
+    final query = _query;
+    final padding = widget.padding.resolve(Directionality.of(context));
     final visibleRecords = _records
         .where(
           (record) =>
@@ -434,164 +448,192 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
           child: RefreshIndicator(
             edgeOffset: 96,
             onRefresh: _selectedZone == null ? _loadZones : _loadRecords,
-            child: CustomScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              slivers: <Widget>[
-                SliverAppBar.large(
-                  pinned: true,
-                  stretch: true,
-                  backgroundColor: colors.surface,
-                  surfaceTintColor: colors.surfaceTint,
-                  scrolledUnderElevation: 1,
-                  leadingWidth: 72,
-                  leading: const Center(child: _CloudflareMark()),
-                  title: const Text('DNS'),
-                  actions: <Widget>[
-                    MenuAnchor(
-                      builder: (context, controller, child) => IconButton(
-                        tooltip: 'Zone file',
-                        onPressed: _selectedZone == null || _writing
-                            ? null
-                            : () => controller.isOpen
-                                  ? controller.close()
-                                  : controller.open(),
-                        icon: const Icon(Icons.description_outlined),
-                      ),
-                      menuChildren: <Widget>[
-                        MenuItemButton(
-                          onPressed: _records.isEmpty ? null : _exportZone,
-                          leadingIcon: const Icon(Icons.content_copy_rounded),
-                          child: const Text('Export zone file'),
-                        ),
-                        MenuItemButton(
-                          onPressed: _importZone,
-                          leadingIcon: const Icon(Icons.upload_file_rounded),
-                          child: const Text('Import zone file'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton.filledTonal(
-                      tooltip: 'Refresh records',
-                      onPressed: _loading ? null : _loadRecords,
-                      icon: DnsSyncStatusIcon(
-                        active: _loading,
-                        icon: Icons.refresh_rounded,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
-                ),
-                SliverToBoxAdapter(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 760),
-                      child: Padding(
-                        padding: widget.padding,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: <Widget>[
-                            _ZoneSelector(
-                              zone: _selectedZone,
-                              onTap: _pickZone,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Centers the record list under the 760 px header column.
+                final inset = ((constraints.maxWidth - _maxWidth) / 2).clamp(
+                  0.0,
+                  double.infinity,
+                );
+                return CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: <Widget>[
+                    SliverAppBar.large(
+                      pinned: true,
+                      stretch: true,
+                      backgroundColor: colors.surface,
+                      surfaceTintColor: colors.surfaceTint,
+                      scrolledUnderElevation: 1,
+                      leadingWidth: 72,
+                      leading: const Center(child: _CloudflareMark()),
+                      title: const Text('DNS'),
+                      actions: <Widget>[
+                        MenuAnchor(
+                          builder: (context, controller, child) => IconButton(
+                            tooltip: 'Zone file',
+                            onPressed: _selectedZone == null || _writing
+                                ? null
+                                : () => controller.isOpen
+                                      ? controller.close()
+                                      : controller.open(),
+                            icon: const Icon(Icons.description_outlined),
+                          ),
+                          menuChildren: <Widget>[
+                            MenuItemButton(
+                              onPressed: _records.isEmpty ? null : _exportZone,
+                              leadingIcon: const Icon(
+                                Icons.content_copy_rounded,
+                              ),
+                              child: const Text('Export zone file'),
                             ),
-                            const SizedBox(height: 16),
-                            if (_selectedZone != null)
-                              DomainHealthCard(
-                                domain: _selectedZone!.name,
-                                report: _report,
-                                loading: _checking,
-                                error: _healthError,
-                                onRefresh: _checkHealth,
+                            MenuItemButton(
+                              onPressed: _importZone,
+                              leadingIcon: const Icon(
+                                Icons.upload_file_rounded,
                               ),
-                            if (_selectedZone != null) ...<Widget>[
-                              const SizedBox(height: 10),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: FilledButton.tonalIcon(
-                                  onPressed: _comparing || _records.isEmpty
-                                      ? null
-                                      : _compareResolvers,
-                                  icon: _comparing
-                                      ? const SizedBox.square(
-                                          dimension: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const Icon(
-                                          Icons.compare_arrows_rounded,
-                                        ),
-                                  label: const Text('Compare resolvers'),
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 12),
-                            _DnsSummary(
-                              total: _records.length,
-                              dnsOnly: _records.length - proxied,
-                              services: services,
-                            ),
-                            if (_error != null) ...<Widget>[
-                              const SizedBox(height: 16),
-                              _DashboardError(
-                                message: _error!,
-                                onRetry: _loadZones,
-                              ),
-                            ],
-                            const SizedBox(height: 32),
-                            _SectionHeading(count: _records.length),
-                            const SizedBox(height: 14),
-                            SearchBar(
-                              controller: _search,
-                              hintText: 'Search name or value',
-                              leading: const Icon(Icons.search_rounded),
-                              elevation: const WidgetStatePropertyAll<double>(
-                                0,
-                              ),
-                              onChanged: (_) => setState(() {}),
-                              trailing: <Widget>[
-                                if (_search.text.isNotEmpty)
-                                  IconButton(
-                                    tooltip: 'Clear search',
-                                    onPressed: () => setState(_search.clear),
-                                    icon: const Icon(Icons.close_rounded),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            _RecordFilterBar(
-                              selected: _filter,
-                              onSelected: (filter) {
-                                setState(() => _filter = filter);
-                              },
-                            ),
-                            const SizedBox(height: 14),
-                            AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 300),
-                              switchInCurve: Curves.easeOutCubic,
-                              switchOutCurve: Curves.easeInCubic,
-                              child: DnsRecordList(
-                                key: ValueKey<_RecordFilter>(_filter),
-                                records: visibleRecords,
-                                enabled: !_writing,
-                                propagation: Map.unmodifiable(_propagation),
-                                onEdit: _edit,
-                                onDelete: _delete,
-                                // Round-tripping through the API JSON drops the
-                                // id, so the editor saves it as a new record.
-                                onDuplicate: (record) => _edit(
-                                  DnsRecord.fromJson(record.toCloudflareJson()),
-                                ),
-                              ),
+                              child: const Text('Import zone file'),
                             ),
                           ],
                         ),
+                        const SizedBox(width: 4),
+                        IconButton.filledTonal(
+                          tooltip: 'Refresh records',
+                          onPressed: _loading ? null : _loadRecords,
+                          icon: DnsSyncStatusIcon(
+                            active: _loading,
+                            icon: Icons.refresh_rounded,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                      ],
+                    ),
+                    SliverToBoxAdapter(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: _maxWidth,
+                          ),
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              padding.left,
+                              padding.top,
+                              padding.right,
+                              0,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: <Widget>[
+                                _ZoneSelector(
+                                  zone: _selectedZone,
+                                  onTap: _pickZone,
+                                ),
+                                const SizedBox(height: 16),
+                                if (_selectedZone != null)
+                                  DomainHealthCard(
+                                    domain: _selectedZone!.name,
+                                    report: _report,
+                                    loading: _checking,
+                                    error: _healthError,
+                                    onRefresh: _checkHealth,
+                                  ),
+                                if (_selectedZone != null) ...<Widget>[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: FilledButton.tonalIcon(
+                                      onPressed: _comparing || _records.isEmpty
+                                          ? null
+                                          : _compareResolvers,
+                                      icon: _comparing
+                                          ? const SizedBox.square(
+                                              dimension: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(
+                                              Icons.compare_arrows_rounded,
+                                            ),
+                                      label: const Text('Compare resolvers'),
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 12),
+                                _DnsSummary(
+                                  total: _records.length,
+                                  dnsOnly: _records.length - proxied,
+                                  services: services,
+                                ),
+                                if (_error != null) ...<Widget>[
+                                  const SizedBox(height: 16),
+                                  _DashboardError(
+                                    message: _error!,
+                                    onRetry: _loadZones,
+                                  ),
+                                ],
+                                const SizedBox(height: 32),
+                                _SectionHeading(count: _records.length),
+                                const SizedBox(height: 14),
+                                SearchBar(
+                                  controller: _search,
+                                  hintText: 'Search name or value',
+                                  leading: const Icon(Icons.search_rounded),
+                                  elevation:
+                                      const WidgetStatePropertyAll<double>(0),
+                                  onChanged: _onSearchChanged,
+                                  trailing: <Widget>[
+                                    if (_search.text.isNotEmpty)
+                                      IconButton(
+                                        tooltip: 'Clear search',
+                                        onPressed: () {
+                                          _searchDebounce?.cancel();
+                                          setState(() {
+                                            _search.clear();
+                                            _query = '';
+                                          });
+                                        },
+                                        icon: const Icon(Icons.close_rounded),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                _RecordFilterBar(
+                                  selected: _filter,
+                                  onSelected: (filter) {
+                                    setState(() => _filter = filter);
+                                  },
+                                ),
+                                const SizedBox(height: 14),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-              ],
+                    // A sliver, so only the visible records are built.
+                    SliverPadding(
+                      padding: EdgeInsets.fromLTRB(
+                        inset + padding.left,
+                        0,
+                        inset + padding.right,
+                        padding.bottom,
+                      ),
+                      sliver: DnsRecordList.sliver(
+                        records: visibleRecords,
+                        enabled: !_writing,
+                        propagation: Map.unmodifiable(_propagation),
+                        onEdit: _edit,
+                        onDelete: _delete,
+                        // Round-tripping through the API JSON drops the id, so
+                        // the editor saves it as a new record.
+                        onDuplicate: (record) => _edit(
+                          DnsRecord.fromJson(record.toCloudflareJson()),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ),
@@ -616,6 +658,106 @@ class _CloudflareDnsDashboardState extends State<CloudflareDnsDashboard> {
             child: LinearProgressIndicator(),
           ),
       ],
+    );
+  }
+}
+
+const double _maxWidth = 760;
+
+bool _isApex(DnsRecord record, DnsZone zone) {
+  final name = record.name.trim().toLowerCase().replaceFirst(
+    RegExp(r'\.$'),
+    '',
+  );
+  return name.isEmpty || name == '@' || name == zone.name.toLowerCase();
+}
+
+class _ZonePickerSheet extends StatefulWidget {
+  const _ZonePickerSheet({required this.zones, required this.selected});
+
+  final List<DnsZone> zones;
+  final DnsZone? selected;
+
+  @override
+  State<_ZonePickerSheet> createState() => _ZonePickerSheetState();
+}
+
+class _ZonePickerSheetState extends State<_ZonePickerSheet> {
+  /// Zone counts above this get a search field.
+  static const _searchThreshold = 8;
+
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final zones = _query.isEmpty
+        ? widget.zones
+        : widget.zones
+              .where((zone) => zone.name.toLowerCase().contains(_query))
+              .toList(growable: false);
+    return Padding(
+      // Keep the search field above the keyboard.
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                  child: Text(
+                    'Choose a zone',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (widget.zones.length > _searchThreshold)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                    child: SearchBar(
+                      hintText: 'Search zones',
+                      leading: const Icon(Icons.search_rounded),
+                      elevation: const WidgetStatePropertyAll<double>(0),
+                      onChanged: (value) =>
+                          setState(() => _query = value.trim().toLowerCase()),
+                    ),
+                  ),
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: zones.length,
+                    itemBuilder: (context, index) {
+                      final zone = zones[index];
+                      return ListTile(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        leading: CircleAvatar(
+                          child: Text(zone.name.characters.first.toUpperCase()),
+                        ),
+                        title: Text(zone.name),
+                        subtitle: Text(zone.status ?? 'unknown'),
+                        trailing: zone == widget.selected
+                            ? const Icon(Icons.check_circle_rounded)
+                            : null,
+                        selected: zone == widget.selected,
+                        onTap: () => Navigator.pop(context, zone),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

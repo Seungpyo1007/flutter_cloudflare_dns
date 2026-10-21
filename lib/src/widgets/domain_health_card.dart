@@ -85,7 +85,7 @@ class DomainHealthCard extends StatelessWidget {
         ? Column(
             key: const ValueKey<String>('health-check-issues'),
             children: <Widget>[
-              for (final issue in currentReport.issues.take(4))
+              for (final issue in _bySeverity(currentReport.issues).take(4))
                 Padding(
                   padding: const EdgeInsets.only(top: 7),
                   child: _SupportingMessage(
@@ -266,3 +266,9 @@ class _SupportingMessage extends StatelessWidget {
     ),
   );
 }
+
+/// Errors first, then warnings, then info, keeping the order within each.
+List<DnsIssue> _bySeverity(List<DnsIssue> issues) => <DnsIssue>[
+  for (final severity in DnsIssueSeverity.values.reversed)
+    ...issues.where((issue) => issue.severity == severity),
+];

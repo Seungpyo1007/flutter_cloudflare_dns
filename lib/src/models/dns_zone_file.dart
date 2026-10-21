@@ -1,4 +1,5 @@
 import 'dns_record.dart';
+import 'dns_text.dart';
 
 /// A line of a zone file that [DnsZoneFile.parse] could not turn into a
 /// record.
@@ -308,30 +309,10 @@ abstract final class DnsZoneFile {
           i++;
         } else if (char == '"') {
           final start = i;
-          final value = StringBuffer();
-          i++;
-          while (i < line.length && line[i] != '"') {
-            if (line[i] == r'\' && i + 1 < line.length) {
-              final digits = RegExp(
-                r'^\d{3}',
-              ).stringMatch(line.substring(i + 1));
-              if (digits != null) {
-                value.writeCharCode(int.parse(digits));
-                i += 4;
-                continue;
-              }
-              i++;
-            }
-            value.write(line[i]);
-            i++;
-          }
-          i++;
+          final read = readQuotedString(line, i);
+          i = read.end;
           entry.tokens.add(
-            _Token(
-              value.toString(),
-              quoted: true,
-              raw: line.substring(start, i.clamp(0, line.length)),
-            ),
+            _Token(read.text, quoted: true, raw: line.substring(start, i)),
           );
         } else {
           final start = i;
@@ -418,14 +399,9 @@ abstract final class DnsZoneFile {
     ).hasMatch(value)) {
       return value;
     }
-    // One character-string holds at most 255 bytes; split longer values.
-    final chunks = <String>[
-      for (var i = 0; i < value.length; i += 255)
-        value.substring(i, (i + 255).clamp(0, value.length)),
-    ];
-    return (chunks.isEmpty ? <String>[''] : chunks)
-        .map((chunk) => '"${_escape(chunk)}"')
-        .join(' ');
+    // One character-string holds at most 255 bytes; split longer values
+    // without cutting a UTF-8 sequence in half.
+    return splitUtf8(value).map((chunk) => '"${_escape(chunk)}"').join(' ');
   }
 
   static String _escape(String value) =>

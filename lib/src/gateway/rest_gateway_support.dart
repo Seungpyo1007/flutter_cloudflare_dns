@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -12,7 +13,18 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
   /// Creates a gateway that sends requests through [client].
   ///
   /// Set [ownsClient] when the gateway created [client], so [close] releases it.
-  RestCloudflareDnsGateway({required this.client, this.ownsClient = false});
+  RestCloudflareDnsGateway({
+    required this.client,
+    this.ownsClient = false,
+    this.requestTimeout = const Duration(seconds: 10),
+  });
+
+  /// How long one HTTP request may take, including reading the response,
+  /// before [send] throws a [CloudflareDnsException] with code `timeout`.
+  ///
+  /// A timed-out write may still have been applied by the server; reload the
+  /// records before retrying it.
+  final Duration requestTimeout;
 
   /// Whether [close] releases [client], because this gateway created it.
   final bool ownsClient;
@@ -36,7 +48,8 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
   /// Sends a JSON request and buffers the full response.
   ///
   /// HTTP 429 responses are retried up to [maxRetries] times, waiting for the
-  /// `Retry-After` seconds (at most 60) or 1, 2, then 4 seconds.
+  /// `Retry-After` seconds (at most 60) or 1, 2, then 4 seconds. Each attempt
+  /// is limited to [requestTimeout].
   Future<http.Response> send(
     String method,
     Uri uri, {
@@ -52,9 +65,19 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
           ...?headers,
         });
       if (body != null) request.body = jsonEncode(body);
-      final response = await http.Response.fromStream(
-        await client.send(request),
-      );
+      final http.Response response;
+      try {
+        response = await client
+            .send(request)
+            .then(http.Response.fromStream)
+            .timeout(requestTimeout);
+      } on TimeoutException {
+        throw CloudflareDnsException(
+          'The DNS service did not respond within '
+          '${requestTimeout.inSeconds} seconds.',
+          code: 'timeout',
+        );
+      }
       if (response.statusCode != 429 || attempt >= maxRetries) return response;
       final retryAfter = int.tryParse(response.headers['retry-after'] ?? '');
       final seconds = (retryAfter ?? 1 << attempt).clamp(0, 60).toInt();
@@ -162,7 +185,7 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     return result
         .whereType<Map>()
         .where((item) => DnsRecordType.tryParse(item['type']) != null)
-        .map((item) => DnsRecord.fromJson(_stringMap(item)))
+        .map(_record)
         .toList(growable: false);
   }
 
@@ -171,7 +194,18 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     if (result is! Map) {
       throw const CloudflareDnsException('Expected a DNS record.');
     }
-    return DnsRecord.fromJson(_stringMap(result));
+    return _record(result);
+  }
+
+  DnsRecord _record(Map<dynamic, dynamic> item) {
+    try {
+      return DnsRecord.fromJson(_stringMap(item));
+    } on FormatException catch (error) {
+      throw CloudflareDnsException(
+        'The DNS service returned an invalid record: ${error.message}',
+        code: 'invalid_record',
+      );
+    }
   }
 
   /// Validates every change and builds a Cloudflare batch request body.

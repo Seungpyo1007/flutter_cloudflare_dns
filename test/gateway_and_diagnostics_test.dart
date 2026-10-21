@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_cloudflare_dns/flutter_cloudflare_dns.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -169,7 +170,8 @@ void main() {
         'tag': 'issue',
         'value': 'letsencrypt.org',
       });
-      expect(bodies.last.containsKey('tags'), isFalse);
+      // Sent even when empty, so PATCH clears old tags.
+      expect(bodies.last['tags'], isEmpty);
       expect(mx.priority, 10);
       expect(caa.caaValue, 'letsencrypt.org');
     });
@@ -502,32 +504,39 @@ void main() {
       expect(comparisons.map((c) => c.matches(record)), <bool>[false, true]);
     });
 
-    test('watchPropagation stops at the timeout', () async {
-      final client = MockClient(
-        (request) async => http.Response(
-          jsonEncode(<String, Object?>{'Status': 0, 'Answer': <Object?>[]}),
-          200,
-        ),
-      );
+    test('watchPropagation stops at the timeout', () {
+      fakeAsync((async) {
+        final client = MockClient(
+          (request) async => http.Response(
+            jsonEncode(<String, Object?>{'Status': 0, 'Answer': <Object?>[]}),
+            200,
+          ),
+        );
+        final comparisons = <DnsResolverComparison>[];
+        var done = false;
+        DnsDiagnostics(client: client)
+            .watchPropagation(
+              const DnsRecord(
+                type: DnsRecordType.a,
+                name: 'www.example.com',
+                content: '192.0.2.2',
+              ),
+              interval: const Duration(seconds: 1),
+              timeout: const Duration(milliseconds: 2500),
+            )
+            .listen(comparisons.add, onDone: () => done = true);
 
-      final comparisons = await DnsDiagnostics(client: client)
-          .watchPropagation(
-            const DnsRecord(
-              type: DnsRecordType.a,
-              name: 'www.example.com',
-              content: '192.0.2.2',
-            ),
-            interval: const Duration(milliseconds: 1),
-            timeout: const Duration(milliseconds: 2),
-          )
-          .toList();
+        async.elapse(const Duration(seconds: 3));
 
-      expect(comparisons, hasLength(3));
-      expect(comparisons.last.consistent, isTrue);
-      expect(
-        comparisons.any((c) => c.answers.values.first.isNotEmpty),
-        isFalse,
-      );
+        // Polls at 0 s, 1 s, and 2 s, then closes at 2.5 s.
+        expect(comparisons, hasLength(3));
+        expect(done, isTrue);
+        expect(comparisons.last.consistent, isTrue);
+        expect(
+          comparisons.any((c) => c.answers.values.first.isNotEmpty),
+          isFalse,
+        );
+      });
     });
   });
 

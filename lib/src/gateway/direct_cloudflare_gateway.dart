@@ -24,6 +24,7 @@ class DirectCloudflareGateway extends RestCloudflareDnsGateway
     required bool acknowledgeTokenRisk,
     http.Client? client,
     Uri? apiBaseUri,
+    super.requestTimeout,
   }) : apiBaseUri =
            apiBaseUri ?? Uri.parse('https://api.cloudflare.com/client/v4'),
        super(client: client ?? http.Client(), ownsClient: client == null) {
