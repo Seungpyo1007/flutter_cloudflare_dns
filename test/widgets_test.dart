@@ -28,7 +28,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('example.com'), findsWidgets);
-    final recordList = tester.widget<DnsRecordList>(find.byType(DnsRecordList));
+    // The list is a sliver below the fold on the 800x600 test surface.
+    final recordList = tester.widget<DnsRecordList>(
+      find.byType(DnsRecordList, skipOffstage: false),
+    );
     expect(recordList.records.single.content, '192.0.2.1');
     expect(find.text('Public DNS is healthy'), findsOneWidget);
   });
@@ -411,8 +414,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    List<DnsRecord> visible() =>
-        tester.widget<DnsRecordList>(find.byType(DnsRecordList)).records;
+    List<DnsRecord> visible() => tester
+        .widget<DnsRecordList>(find.byType(DnsRecordList, skipOffstage: false))
+        .records;
     final searchField = find.descendant(
       of: find.byType(SearchBar),
       matching: find.byType(TextField),
@@ -420,10 +424,13 @@ void main() {
     expect(visible(), hasLength(2));
 
     await tester.enterText(searchField, 'DMARC');
+    // The search waits for typing to pause.
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpAndSettle();
     expect(visible().single.id, 'txt-1');
 
     await tester.enterText(searchField, '192.0.2');
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpAndSettle();
     expect(visible().single.id, 'a-1');
   });

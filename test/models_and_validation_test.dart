@@ -108,6 +108,7 @@ void main() {
         'type': 'MX',
         'name': 'example.com',
         'ttl': 1,
+        'tags': <String>[],
         'content': 'mail.example.com',
         'priority': 10,
       });
@@ -159,8 +160,8 @@ void main() {
           type: DnsRecordType.a,
           name: 'example.com',
           content: '192.0.2.1',
-        ).toCloudflareJson().containsKey('tags'),
-        isFalse,
+        ).toCloudflareJson()['tags'],
+        isEmpty,
       );
     });
   });

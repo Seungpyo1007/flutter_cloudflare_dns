@@ -54,13 +54,14 @@ type picker, SRV fields, TTL presets, and live record preview. You can also
 - Apply many changes in one atomic Cloudflare batch request.
 - Edit HTTPS and SVCB service bindings (priority, target, parameters) and PTR
   records.
-- Retry rate-limited (HTTP 429) Cloudflare API requests automatically.
+- Retry rate-limited (HTTP 429) Cloudflare API requests automatically, and
+  time out requests that hang.
 
 ## Installation
 
 ```yaml
 dependencies:
-  flutter_cloudflare_dns: ^0.2.0
+  flutter_cloudflare_dns: ^0.2.1
 ```
 
 The package requires Dart 3.12 and Flutter 3.44 or newer.
@@ -160,6 +161,11 @@ Create a scoped Cloudflare API token with only **Zone: Read** and
 Direct access does not work in Flutter web builds because the Cloudflare API
 does not allow cross-origin browser requests.
 
+Every gateway request fails with a `CloudflareDnsException` whose `code` is
+`timeout` after `requestTimeout` (10 seconds by default; pass it to either
+gateway's constructor). A timed-out write may still have reached Cloudflare,
+so reload the records before retrying it.
+
 Call `close()` on gateways and `DnsDiagnostics` instances you create when you
 no longer need them. Clients you pass in stay open for you to close. The
 dashboard closes only the diagnostics client it creates itself.
@@ -191,6 +197,19 @@ for (final issue in report.issues) {
 `DnsHealthReport.answers` is keyed by `name|TYPE`, for example
 `_minecraft._tcp.example.com|SRV`.
 
+Answers are compared the way DNS reads them: host names ignore case and the
+trailing dot, IPv6 addresses compare by value, and a TXT value split into
+several quoted strings (as long DKIM keys are) matches the joined value. TXT
+values keep their case.
+
+A CNAME at the zone apex is reported as `cname_flattened` (info) instead of
+being looked up: Cloudflare flattens it into the target's A and AAAA
+records, so public DNS never shows the CNAME itself.
+
+Each lookup times out after `requestTimeout` (10 seconds), and at most
+`maxConcurrentLookups` (8) run at once, so checking a large zone does not
+flood the public resolvers. Both are `DnsDiagnostics` constructor options.
+
 To check whether a change has reached other public resolvers, compare
 Cloudflare and Google answers:
 
@@ -218,9 +237,17 @@ await for (final comparison in DnsDiagnostics().watchPropagation(changed)) {
 ```
 
 It polls every 15 seconds for up to 10 minutes by default (`interval`,
-`timeout`). The dashboard does this for every record you save that is not
-proxied, and shows "Propagating", "Propagated", or "Not visible everywhere
-yet" on the record.
+`timeout`). The stream closes when `timeout` passes even if a lookup is still
+running. The dashboard does this for every record you save that is not
+proxied or an apex CNAME, and shows "Propagating", "Propagated", or "Not
+visible everywhere yet" on the record.
+
+The dashboard's automatic health check looks up at most
+`maxHealthCheckRecords` (100) DNS-only records, apex records first, and adds
+a `check_limited` info issue when a zone has more. "Compare resolvers" still
+checks every record. Its record list is a sliver, so only visible records are
+built; use `DnsRecordList.sliver` in your own `CustomScrollView` for the
+same.
 
 ## Zone files
 
@@ -300,7 +327,8 @@ final letsEncryptOnly = DnsRecord.caa(
 ```
 
 Use `@` for the zone apex. Underscore labels such as `_dmarc.example.com` are
-accepted for TXT, CNAME, and SRV names.
+accepted for TXT, CNAME, and SRV names, and a leading `*` label, as in
+`*.example.com`, makes a wildcard record.
 
 ## Example
 

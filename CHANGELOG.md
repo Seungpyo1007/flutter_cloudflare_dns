@@ -1,3 +1,46 @@
+## 0.2.1
+
+* Fix long TXT values such as DKIM keys never matching across resolvers.
+  Cloudflare answers with several quoted strings and Google with the joined
+  value; health checks, `compareResolvers`, and `watchPropagation` now
+  compare the joined value, so these records no longer stay "Propagating" or
+  report `content_mismatch`.
+* Fix TXT values and CAA `iodef` URLs being compared without case. Only host
+  names and CAA issuer domains ignore case now, and IPv6 addresses compare by
+  value (`2001:DB8::1` matches `2001:db8:0:0:0:0:0:1`).
+* Fix requests that never answer hanging forever. DoH lookups and gateway
+  requests time out after `requestTimeout` (10 seconds by default, a new
+  option on `DnsDiagnostics`, `DirectCloudflareGateway`, and
+  `ProxyCloudflareGateway`), and `watchPropagation` closes at `timeout` even
+  while a lookup is still running.
+* Fix wildcard records (`*.example.com`) failing validation and zone file
+  import.
+* Fix clearing all tags through `ProxyCloudflareGateway` (PATCH) and batch
+  patches: writes now always send `tags`, empty or not.
+* Fix the dashboard sending one DoH request per record at once. Lookups run
+  at most `maxConcurrentLookups` (8) at a time, and the automatic health check
+  covers at most `maxHealthCheckRecords` (100) records, apex first, with a
+  `check_limited` info issue for larger zones.
+* Fix the zone picker overflowing with many zones. It scrolls, and shows a
+  search field above eight zones.
+* Fix A and AAAA validation accepting `+1.2.3.4`, `01.2.3.4`, and `:::::`
+  and rejecting `::ffff:1.2.3.4`; addresses are now parsed.
+* Fix zone file export splitting non-ASCII TXT values by characters, which
+  produced strings over the 255-byte limit. They are split by UTF-8 bytes.
+* Fix zone file `\DDD` escapes not decoding as UTF-8, so `\240\159\152\128`
+  reads as 😀.
+* Fix an apex CNAME always failing the health check and propagation
+  tracking. Cloudflare flattens it, so it is reported as `cname_flattened`
+  (info) and not tracked.
+* Fix slow rendering of large zones. `DnsRecordList` builds only visible
+  tiles when its height is bounded, the new `DnsRecordList.sliver` does the
+  same in a `CustomScrollView`, and the dashboard uses it. Dashboard search
+  waits 250 ms after typing.
+* Fix `DnsRecord.fromJson` throwing a `TypeError` when a proxy sends
+  `proxied` or a number as a string. Such values are accepted; anything else
+  is a `FormatException`, which gateways report as a `CloudflareDnsException`
+  with code `invalid_record`.
+
 ## 0.2.0
 
 **Breaking:** `DnsRecordType` gains `https`, `svcb`, and `ptr`. Exhaustive

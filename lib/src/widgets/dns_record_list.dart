@@ -22,6 +22,11 @@ String dnsPropagationKey(DnsRecord record) =>
     record.id ?? '${record.name}|${record.type.wireName}';
 
 /// Responsive Material list of DNS records.
+///
+/// Tiles are built lazily when the list has a bounded height, and by
+/// [DnsRecordList.sliver] inside a [CustomScrollView], so zones with
+/// thousands of records stay fast. With an unbounded height, such as in a
+/// [Column] inside a scroll view, every tile is built.
 class DnsRecordList extends StatelessWidget {
   /// Creates a record list.
   const DnsRecordList({
@@ -32,7 +37,18 @@ class DnsRecordList extends StatelessWidget {
     this.onDuplicate,
     this.enabled = true,
     this.propagation = const <String, DnsPropagationStatus>{},
-  });
+  }) : _sliver = false;
+
+  /// Creates a record list for a [CustomScrollView]'s slivers.
+  const DnsRecordList.sliver({
+    super.key,
+    required this.records,
+    this.onEdit,
+    this.onDelete,
+    this.onDuplicate,
+    this.enabled = true,
+    this.propagation = const <String, DnsPropagationStatus>{},
+  }) : _sliver = true;
 
   /// Records to display.
   final List<DnsRecord> records;
@@ -52,15 +68,19 @@ class DnsRecordList extends StatelessWidget {
   /// Propagation state shown on records, keyed by [dnsPropagationKey].
   final Map<String, DnsPropagationStatus> propagation;
 
+  final bool _sliver;
+
+  static const _radius = Radius.circular(28);
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     if (records.isEmpty) {
-      return Container(
+      final empty = Container(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 42),
         decoration: BoxDecoration(
           color: colors.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: const BorderRadius.all(_radius),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -75,28 +95,73 @@ class DnsRecordList extends StatelessWidget {
           ],
         ),
       );
+      return _sliver ? SliverToBoxAdapter(child: empty) : empty;
+    }
+
+    if (_sliver) {
+      return DecoratedSliver(
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLow,
+          borderRadius: const BorderRadius.all(_radius),
+        ),
+        sliver: SliverList.builder(
+          itemCount: records.length,
+          itemBuilder: _item,
+        ),
+      );
     }
 
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(28),
+      borderRadius: const BorderRadius.all(_radius),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: <Widget>[
-          for (var index = 0; index < records.length; index++) ...<Widget>[
-            _DnsRecordTile(
-              record: records[index],
-              enabled: enabled,
-              onEdit: onEdit,
-              onDelete: onDelete,
-              onDuplicate: onDuplicate,
-              propagation: propagation[dnsPropagationKey(records[index])],
-            ),
-            if (index != records.length - 1)
-              const Divider(height: 1, indent: 82, endIndent: 18),
-          ],
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) => constraints.hasBoundedHeight
+            ? ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: records.length,
+                itemBuilder: _item,
+              )
+            : Column(
+                children: <Widget>[
+                  for (var index = 0; index < records.length; index++)
+                    _item(context, index),
+                ],
+              ),
       ),
+    );
+  }
+
+  /// The tile for record [index], with the divider below it.
+  Widget _item(BuildContext context, int index) {
+    final last = index == records.length - 1;
+    final tile = _DnsRecordTile(
+      record: records[index],
+      enabled: enabled,
+      onEdit: onEdit,
+      onDelete: onDelete,
+      onDuplicate: onDuplicate,
+      propagation: propagation[dnsPropagationKey(records[index])],
+    );
+    final child = last
+        ? tile
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              tile,
+              const Divider(height: 1, indent: 82, endIndent: 18),
+            ],
+          );
+    if (!_sliver) return child;
+    // A sliver cannot clip its children, so round the ink of the end tiles.
+    return Material(
+      type: MaterialType.transparency,
+      borderRadius: BorderRadius.vertical(
+        top: index == 0 ? _radius : Radius.zero,
+        bottom: last ? _radius : Radius.zero,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
     );
   }
 }

@@ -32,7 +32,11 @@ abstract final class DnsRecordValidator {
       DnsRecordType.ptr => false,
     };
     if (record.name.trim() != '@' &&
-        !_validName(record.name, allowUnderscore: allowUnderscore)) {
+        !_validName(
+          record.name,
+          allowUnderscore: allowUnderscore,
+          allowWildcard: true,
+        )) {
       add('invalid_name', 'Enter a valid DNS record name.');
     }
     if (record.ttl != 1 && record.ttl < 60) {
@@ -152,29 +156,43 @@ abstract final class DnsRecordValidator {
   static bool _inRange(int? value, int min, int max) =>
       value != null && value >= min && value <= max;
 
-  static bool _validName(String value, {bool allowUnderscore = false}) {
+  /// [allowWildcard] accepts a leading `*` label, as in `*.example.com`.
+  static bool _validName(
+    String value, {
+    bool allowUnderscore = false,
+    bool allowWildcard = false,
+  }) {
     final normalized = value.trim().replaceFirst(RegExp(r'\.$'), '');
     if (normalized.isEmpty || normalized.length > 253) return false;
     final labelPattern = allowUnderscore
         ? RegExp(r'^[a-zA-Z0-9_](?:[a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?$')
         : RegExp(r'^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$');
-    return normalized.split('.').every(labelPattern.hasMatch);
+    final labels = normalized.split('.');
+    if (allowWildcard && labels.first == '*') labels.removeAt(0);
+    return labels.every(labelPattern.hasMatch);
   }
 
+  // dart:core's parsers reject leading zeros, signs, and malformed groups,
+  // and work on every platform including the web.
   static bool _validIpv4(String value) {
-    final parts = value.trim().split('.');
-    return parts.length == 4 &&
-        parts.every((part) {
-          final number = int.tryParse(part);
-          return number != null && number >= 0 && number <= 255;
-        });
+    try {
+      Uri.parseIPv4Address(value.trim());
+      return true;
+    } on FormatException {
+      return false;
+    }
   }
 
   static bool _validIpv6(String value) {
-    final normalized = value.trim();
-    return normalized.contains(':') &&
-        RegExp(r'^[0-9a-fA-F:]+$').hasMatch(normalized) &&
-        normalized.length <= 45;
+    final address = value.trim();
+    // A zone index such as `%en0` has no meaning in DNS.
+    if (!address.contains(':') || address.contains('%')) return false;
+    try {
+      Uri.parseIPv6Address(address);
+      return true;
+    } on FormatException {
+      return false;
+    }
   }
 }
 

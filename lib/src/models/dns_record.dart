@@ -1,3 +1,5 @@
+import 'dns_text.dart';
+
 /// DNS record types supported by the package.
 enum DnsRecordType {
   a('A'),
@@ -306,7 +308,7 @@ class DnsRecord {
       name: json['name']?.toString() ?? '',
       content: content,
       ttl: _asInt(json['ttl']) ?? 1,
-      proxied: json['proxied'] as bool?,
+      proxied: _asBool(json['proxied'], 'proxied'),
       comment: json['comment']?.toString(),
       tags: tags,
       priority: priority,
@@ -376,9 +378,10 @@ class DnsRecord {
       'type': type.wireName,
       'name': name,
       'ttl': ttl,
-      // An empty comment is sent on purpose: it clears the comment on PATCH.
+      // An empty comment and empty tags are sent on purpose: they clear the
+      // old values on PATCH.
       if (comment != null) 'comment': comment,
-      if (tags.isNotEmpty) 'tags': tags,
+      'tags': tags,
     };
     switch (type) {
       case DnsRecordType.srv:
@@ -452,27 +455,60 @@ class DnsRecord {
   }
 
   /// Normalized content used by diagnostics.
-  String get canonicalContent {
-    final value = switch (type) {
-      DnsRecordType.srv =>
-        '${priority ?? 0} ${weight ?? 0} ${port ?? 0} ${target ?? ''}',
-      DnsRecordType.mx =>
-        '${priority ?? 0} ${content.trim().replaceAll(RegExp(r'\.$'), '')}',
-      DnsRecordType.caa => '${caaFlags ?? 0} ${caaTag ?? ''} ${caaValue ?? ''}',
-      DnsRecordType.txt => content.trim().replaceAll(RegExp(r'^"|"$'), ''),
-      // DoH answers drop the quotes Cloudflare keeps around values such as
-      // alpn="h3,h2".
-      DnsRecordType.https || DnsRecordType.svcb =>
-        '${priority ?? 0} '
-            '${(target ?? '').replaceAll(RegExp(r'(?<=.)\.$'), '')} '
-            '${(svcParams ?? '').replaceAll('"', '').trim()}',
-      DnsRecordType.a ||
-      DnsRecordType.aaaa ||
-      DnsRecordType.cname ||
-      DnsRecordType.ns ||
-      DnsRecordType.ptr => content,
-    };
-    return value.trim().replaceAll(RegExp(r'\.$'), '').toLowerCase();
+  ///
+  /// Host names are compared case-insensitively and without a trailing dot,
+  /// IPv6 addresses by value, and TXT values as the concatenation of their
+  /// character-strings. TXT values and CAA `iodef` URLs keep their case.
+  String get canonicalContent => switch (type) {
+    DnsRecordType.a => content.trim(),
+    DnsRecordType.aaaa => _canonicalIpv6(content),
+    DnsRecordType.cname ||
+    DnsRecordType.ns ||
+    DnsRecordType.ptr => _host(content),
+    DnsRecordType.srv =>
+      '${priority ?? 0} ${weight ?? 0} ${port ?? 0} ${_host(target ?? '')}',
+    DnsRecordType.mx => '${priority ?? 0} ${_host(content)}',
+    DnsRecordType.caa => _canonicalCaa(caaFlags, caaTag, caaValue),
+    DnsRecordType.txt => decodeTxtContent(content),
+    // DoH answers drop the quotes Cloudflare keeps around values such as
+    // alpn="h3,h2".
+    DnsRecordType.https || DnsRecordType.svcb =>
+      '${priority ?? 0} ${_host(target ?? '')} '
+              '${(svcParams ?? '').replaceAll('"', '').trim()}'
+          .trim(),
+  };
+}
+
+/// CAA `issue` and `issuewild` values name a CA by domain, compared without
+/// case; `iodef` is a URL and keeps it.
+String _canonicalCaa(int? flags, String? tag, String? value) {
+  final property = (tag ?? '').toLowerCase();
+  final text = (value ?? '').trim();
+  return '${flags ?? 0} $property '
+      '${property == 'iodef' ? text : text.toLowerCase()}';
+}
+
+/// A host name for comparison: trimmed, lowercase, without a trailing dot.
+/// The root name `.` stays as it is.
+String _host(String value) {
+  final name = value.trim().toLowerCase();
+  return name.length > 1 && name.endsWith('.')
+      ? name.substring(0, name.length - 1)
+      : name;
+}
+
+/// [value] as eight lowercase hex groups, so `2001:DB8::1` and
+/// `2001:0db8:0:0:0:0:0:1` compare equal. Unparsable values are lowercased.
+String _canonicalIpv6(String value) {
+  final address = value.trim();
+  try {
+    final bytes = Uri.parseIPv6Address(address);
+    return <String>[
+      for (var i = 0; i < 16; i += 2)
+        ((bytes[i] << 8) | bytes[i + 1]).toRadixString(16),
+    ].join(':');
+  } on FormatException {
+    return address.toLowerCase();
   }
 }
 
@@ -483,5 +519,15 @@ Map<String, Object?>? _objectMap(Object? value) {
 
 int? _asInt(Object? value) {
   if (value is int) return value;
-  return int.tryParse(value?.toString() ?? '');
+  if (value is num && value == value.roundToDouble()) return value.toInt();
+  return int.tryParse(value?.toString().trim() ?? '');
 }
+
+/// Reads a JSON boolean that some proxies send as a string.
+bool? _asBool(Object? value, String field) => switch (value) {
+  null => null,
+  final bool flag => flag,
+  final String text when text.trim().toLowerCase() == 'true' => true,
+  final String text when text.trim().toLowerCase() == 'false' => false,
+  _ => throw FormatException('Invalid boolean for $field: $value'),
+};
