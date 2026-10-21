@@ -38,6 +38,7 @@ class DnsHealthReport {
     required this.checkedAt,
     required this.answers,
     required this.issues,
+    this.dnssecValidated,
   });
 
   /// Domain that was checked.
@@ -51,6 +52,13 @@ class DnsHealthReport {
 
   /// Findings from the check.
   final List<DnsIssue> issues;
+
+  /// Whether the resolver validated every answer with DNSSEC (the `AD` flag
+  /// of each successful lookup), or null when no lookup succeeded.
+  ///
+  /// False usually means the zone is not signed, or its DS record is missing
+  /// at the registrar.
+  final bool? dnssecValidated;
 
   /// Whether the report contains no errors or warnings.
   bool get isHealthy =>
@@ -69,6 +77,8 @@ class DnsResolverComparison {
     required this.type,
     required this.answers,
     this.failedResolvers = const <String>{},
+    this.nxdomainResolvers = const <String>{},
+    this.cnames = const <String, List<DnsRecord>>{},
   });
 
   /// Queried DNS name.
@@ -82,6 +92,14 @@ class DnsResolverComparison {
 
   /// Labels of resolvers whose lookup failed.
   final Set<String> failedResolvers;
+
+  /// Labels of resolvers that answered that the name does not exist
+  /// (NXDOMAIN). Their [answers] are empty; they did not fail.
+  final Set<String> nxdomainResolvers;
+
+  /// CNAME records each resolver followed to reach [answers], keyed like
+  /// [answers]. Empty when the name has no CNAME.
+  final Map<String, List<DnsRecord>> cnames;
 
   /// Whether every resolver answered and all answers match.
   bool get consistent {
@@ -106,4 +124,39 @@ class DnsResolverComparison {
           (answer) => answer.canonicalContent == record.canonicalContent,
         ),
       );
+
+  /// Whether every resolver answered and none returned [record]'s content,
+  /// so a deletion of [record] has propagated. Other records with the same
+  /// name and type may remain.
+  bool lacks(DnsRecord record) =>
+      failedResolvers.isEmpty &&
+      answers.isNotEmpty &&
+      answers.values.every(
+        (records) => records.every(
+          (answer) => answer.canonicalContent != record.canonicalContent,
+        ),
+      );
+}
+
+/// What one DNS-over-HTTPS lookup returned.
+class DnsLookupResult {
+  /// Creates a lookup result.
+  const DnsLookupResult({
+    required this.records,
+    this.cnames = const <DnsRecord>[],
+    this.nxdomain = false,
+    this.authenticated = false,
+  });
+
+  /// Answers of the queried type.
+  final List<DnsRecord> records;
+
+  /// CNAME records the resolver followed before reaching [records].
+  final List<DnsRecord> cnames;
+
+  /// Whether the name does not exist (DNS status 3, NXDOMAIN).
+  final bool nxdomain;
+
+  /// Whether the resolver validated the answer with DNSSEC (the `AD` flag).
+  final bool authenticated;
 }

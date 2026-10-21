@@ -6,14 +6,16 @@ import '../validation/dns_record_validator.dart';
 
 /// Material bottom sheet that previews a pasted zone file before import.
 ///
-/// Records that fail validation or already exist in [existingRecords] are
-/// shown but not returned.
+/// Records that fail validation, already exist in [existingRecords], or
+/// conflict with other records (a CNAME next to other records with the same
+/// name, a second MX beside a null MX) are shown but not returned.
 class DnsZoneImportSheet extends StatefulWidget {
   /// Creates an import sheet.
   const DnsZoneImportSheet({
     super.key,
     required this.zoneName,
     this.existingRecords = const <DnsRecord>[],
+    this.policy = const DnsRecordPolicy(),
   });
 
   /// Zone that relative names resolve against.
@@ -22,11 +24,15 @@ class DnsZoneImportSheet extends StatefulWidget {
   /// Records already in the zone, skipped as duplicates.
   final List<DnsRecord> existingRecords;
 
+  /// Plan limits records are validated against, such as the TTL range.
+  final DnsRecordPolicy policy;
+
   /// Opens the sheet and returns the records to create, or null if cancelled.
   static Future<List<DnsRecord>?> show(
     BuildContext context, {
     required String zoneName,
     List<DnsRecord> existingRecords = const <DnsRecord>[],
+    DnsRecordPolicy policy = const DnsRecordPolicy(),
   }) {
     return showModalBottomSheet<List<DnsRecord>>(
       context: context,
@@ -37,6 +43,7 @@ class DnsZoneImportSheet extends StatefulWidget {
       builder: (_) => DnsZoneImportSheet(
         zoneName: zoneName,
         existingRecords: existingRecords,
+        policy: policy,
       ),
     );
   }
@@ -74,12 +81,18 @@ class _DnsZoneImportSheetState extends State<DnsZoneImportSheet> {
     final result = DnsZoneFile.parse(_text.text, origin: widget.zoneName);
     final existing = widget.existingRecords.map(_key).toSet();
     final seen = <String>{};
+    // Zone rules are checked against the zone plus the records accepted so
+    // far, so the first of two conflicting records is the one imported.
+    final zone = <DnsRecord>[...widget.existingRecords];
     setState(() {
       _issues = result.issues;
       _rows = <_PreviewRow>[
         for (final record in result.records)
           () {
-            final issues = DnsRecordValidator.validate(record);
+            final issues = DnsRecordValidator.validate(
+              record,
+              policy: widget.policy,
+            );
             if (issues.isNotEmpty) {
               return (
                 record: record,
@@ -91,6 +104,19 @@ class _DnsZoneImportSheetState extends State<DnsZoneImportSheet> {
             if (existing.contains(key) || !seen.add(key)) {
               return (record: record, status: _RowStatus.exists, error: null);
             }
+            final conflicts = DnsRecordValidator.validateInZone(
+              record,
+              zone,
+              zoneName: widget.zoneName,
+            );
+            if (conflicts.isNotEmpty) {
+              return (
+                record: record,
+                status: _RowStatus.invalid,
+                error: conflicts.first.message,
+              );
+            }
+            zone.add(record);
             return (record: record, status: _RowStatus.ready, error: null);
           }(),
       ];
@@ -145,7 +171,7 @@ class _DnsZoneImportSheetState extends State<DnsZoneImportSheet> {
           ),
           const SizedBox(height: 12),
           Align(
-            alignment: Alignment.centerRight,
+            alignment: AlignmentDirectional.centerEnd,
             child: FilledButton.tonalIcon(
               onPressed: _preview,
               icon: const Icon(Icons.preview_rounded),

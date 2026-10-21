@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/dns_name.dart';
 import '../models/dns_record.dart';
 import 'dns_sync_status_icon.dart';
 
@@ -188,23 +189,29 @@ class _DnsRecordTile extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final accent = _typeColor(record.type, colors);
     final content = switch (record.type) {
-      DnsRecordType.srv => '${record.target}:${record.port}',
+      DnsRecordType.srv =>
+        '${DnsName.toUnicode(record.target ?? '')}:${record.port}',
       DnsRecordType.caa => '${record.caaTag} ${record.caaValue}',
-      DnsRecordType.https ||
-      DnsRecordType.svcb => '${record.target} ${record.svcParams ?? ''}'.trim(),
-      DnsRecordType.a ||
-      DnsRecordType.aaaa ||
+      DnsRecordType.https || DnsRecordType.svcb =>
+        '${DnsName.toUnicode(record.target ?? '')} ${record.svcParams ?? ''}'
+            .trim(),
       DnsRecordType.cname ||
-      DnsRecordType.txt ||
       DnsRecordType.mx ||
       DnsRecordType.ns ||
-      DnsRecordType.ptr => record.content,
+      DnsRecordType.ptr => DnsName.toUnicode(record.content),
+      DnsRecordType.a ||
+      DnsRecordType.aaaa ||
+      DnsRecordType.txt => record.content,
     };
+    // Internationalized names show in Unicode, with the Punycode form the
+    // API uses as a label.
+    final displayName = DnsName.toUnicode(record.name);
+    final punycode = DnsName.toAscii(record.name);
 
     return InkWell(
       onTap: enabled && onEdit != null ? () => onEdit!(record) : null,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
+        padding: const EdgeInsetsDirectional.fromSTEB(16, 16, 8, 16),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -214,11 +221,11 @@ class _DnsRecordTile extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: accent.container,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(18),
-                  topRight: Radius.circular(18),
-                  bottomLeft: Radius.circular(18),
-                  bottomRight: Radius.circular(6),
+                borderRadius: const BorderRadiusDirectional.only(
+                  topStart: Radius.circular(18),
+                  topEnd: Radius.circular(18),
+                  bottomStart: Radius.circular(18),
+                  bottomEnd: Radius.circular(6),
                 ),
               ),
               child: Text(
@@ -237,7 +244,7 @@ class _DnsRecordTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    record.name,
+                    displayName,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -293,6 +300,11 @@ class _DnsRecordTile extends StatelessWidget {
                         ),
                       if (propagation != null)
                         _PropagationLabel(status: propagation!),
+                      if (displayName != punycode)
+                        _MetadataLabel(
+                          icon: Icons.translate_rounded,
+                          label: punycode,
+                        ),
                       if (record.tags.isNotEmpty)
                         _MetadataLabel(
                           icon: Icons.sell_outlined,
@@ -437,11 +449,16 @@ class _MetadataLabel extends StatelessWidget {
         children: <Widget>[
           Icon(icon, size: 14, color: foreground),
           const SizedBox(width: 5),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: foreground,
-              fontWeight: FontWeight.w700,
+          // Long tags or names shorten instead of overflowing the row.
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: foreground,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],

@@ -23,6 +23,7 @@ class ProxyCloudflareGateway extends RestCloudflareDnsGateway
     this.headersProvider,
     http.Client? client,
     super.requestTimeout,
+    super.recordPolicy,
   }) : super(client: client ?? http.Client(), ownsClient: client == null);
 
   /// Base URI of the application's DNS proxy.

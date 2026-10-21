@@ -33,6 +33,32 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
+  platforms:
+    name: Test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS
+            os: macos-latest
+            args: ''
+          - label: Windows
+            os: windows-latest
+            args: ''
+          # GitHub's Ubuntu runners ship Chrome.
+          - label: web
+            os: ubuntu-latest
+            args: --platform chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter test ${{ matrix.args }}
+
   package:
     name: Package score
     runs-on: ubuntu-latest

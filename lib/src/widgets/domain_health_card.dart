@@ -104,11 +104,11 @@ class DomainHealthCard extends StatelessWidget {
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: containerColor,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(32),
-          topRight: Radius.circular(32),
-          bottomLeft: Radius.circular(32),
-          bottomRight: Radius.circular(10),
+        borderRadius: const BorderRadiusDirectional.only(
+          topStart: Radius.circular(32),
+          topEnd: Radius.circular(32),
+          bottomStart: Radius.circular(32),
+          bottomEnd: Radius.circular(10),
         ),
       ),
       child: Column(
@@ -116,15 +116,18 @@ class DomainHealthCard extends StatelessWidget {
         children: <Widget>[
           Row(
             children: <Widget>[
-              Text(
-                'PUBLIC DNS',
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: foregroundColor.withValues(alpha: 0.78),
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.1,
+              // Expanded rather than a Spacer, so large text wraps instead of
+              // overflowing.
+              Expanded(
+                child: Text(
+                  'PUBLIC DNS',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: foregroundColor.withValues(alpha: 0.78),
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1,
+                  ),
                 ),
               ),
-              const Spacer(),
               if (onRefresh != null)
                 IconButton(
                   tooltip: 'Refresh DNS health',
@@ -207,6 +210,14 @@ class DomainHealthCard extends StatelessWidget {
                         color: foregroundColor.withValues(alpha: 0.78),
                       ),
                     ),
+                    if (!loading && currentReport?.dnssecValidated != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: _DnssecLabel(
+                          validated: currentReport!.dnssecValidated!,
+                          color: foregroundColor,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -264,6 +275,36 @@ class _SupportingMessage extends StatelessWidget {
         ),
       ],
     ),
+  );
+}
+
+/// Whether public answers were DNSSEC-validated.
+class _DnssecLabel extends StatelessWidget {
+  const _DnssecLabel({required this.validated, required this.color});
+
+  final bool validated;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: <Widget>[
+      Icon(
+        validated ? Icons.verified_user_rounded : Icons.gpp_maybe_outlined,
+        size: 16,
+        color: color,
+      ),
+      const SizedBox(width: 6),
+      Flexible(
+        child: Text(
+          validated ? 'DNSSEC validated' : 'DNSSEC not validated',
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+            color: color,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    ],
   );
 }
 

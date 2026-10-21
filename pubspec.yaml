@@ -1,6 +1,6 @@
 name: flutter_cloudflare_dns
 description: "Flutter toolkit for diagnosing and managing Cloudflare DNS: DoH health checks, safe API gateways, and Material 3 widgets."
-version: 0.2.1
+version: 0.3.0
 homepage: https://seungpyo.online
 repository: https://github.com/Seungpyo1007/flutter_cloudflare_dns
 issue_tracker: https://github.com/Seungpyo1007/flutter_cloudflare_dns/issues
@@ -34,6 +34,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.6.0
+  http_parser: ^4.1.2
 
 dev_dependencies:
   fake_async: ^1.3.1

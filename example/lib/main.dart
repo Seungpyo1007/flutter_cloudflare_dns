@@ -76,7 +76,7 @@ class _ExampleDashboardState extends State<ExampleDashboard> {
     return Scaffold(
       body: CloudflareDnsDashboard(
         gateway: gateway,
-        diagnostics: DemoDiagnostics(),
+        diagnostics: DemoDiagnostics(gateway),
         initialZoneName: 'seungpyo.online',
         propagationCheckInterval: const Duration(seconds: 2),
       ),
@@ -86,6 +86,10 @@ class _ExampleDashboardState extends State<ExampleDashboard> {
 
 /// Stable public-health result for a deterministic, offline-friendly demo.
 class DemoDiagnostics extends DnsDiagnostics {
+  DemoDiagnostics(this.gateway);
+
+  /// Records still in the zone; a deleted record fades from the resolvers.
+  final DemoDnsGateway gateway;
   final _polls = <String, int>{};
 
   @override
@@ -102,6 +106,7 @@ class DemoDiagnostics extends DnsDiagnostics {
       checkedAt: DateTime.now().toUtc(),
       answers: const <String, List<DnsRecord>>{},
       issues: const <DnsIssue>[],
+      dnssecValidated: true,
     );
   }
 
@@ -112,18 +117,25 @@ class DemoDiagnostics extends DnsDiagnostics {
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 600));
     final list = records.toList(growable: false);
-    // A saved record is watched alone; Google sees it from the third poll.
+    // A saved or deleted record is watched alone; Google sees the change
+    // from the third poll, Cloudflare at once.
     if (list.length == 1) {
       final record = list.single;
-      final key = '${record.name}|${record.type.wireName}';
+      final deleted = !gateway.contains(record);
+      final key =
+          '${deleted ? 'deleted:' : ''}${record.name}|${record.type.wireName}';
       final polls = _polls[key] = (_polls[key] ?? 0) + 1;
+      final googleCaughtUp = polls >= 3;
+      final googleHasRecord = deleted ? !googleCaughtUp : googleCaughtUp;
       return <DnsResolverComparison>[
         DnsResolverComparison(
           name: record.name,
           type: record.type,
           answers: <String, List<DnsRecord>>{
-            'Cloudflare': <DnsRecord>[record],
-            'Google': polls >= 3 ? <DnsRecord>[record] : const <DnsRecord>[],
+            'Cloudflare': deleted ? const <DnsRecord>[] : <DnsRecord>[record],
+            'Google': googleHasRecord
+                ? <DnsRecord>[record]
+                : const <DnsRecord>[],
           },
         ),
       ];
@@ -149,6 +161,15 @@ class DemoDiagnostics extends DnsDiagnostics {
 ///
 /// It supports batches, so zone file imports are applied in one step.
 class DemoDnsGateway implements BatchCapableGateway {
+  /// Whether a record with [record]'s name, type, and content is in the zone.
+  /// The dashboard watches records by their fully qualified name.
+  bool contains(DnsRecord record) => records.any(
+    (r) =>
+        r.type == record.type &&
+        r.canonicalContent == record.canonicalContent &&
+        (r.name == record.name || record.name.startsWith('${r.name}.')),
+  );
+
   final records = <DnsRecord>[
     const DnsRecord(
       id: 'web',

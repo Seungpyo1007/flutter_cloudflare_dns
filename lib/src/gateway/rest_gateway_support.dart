@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 import '../models/dns_record.dart';
 import '../models/dns_zone.dart';
@@ -17,7 +18,12 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
     required this.client,
     this.ownsClient = false,
     this.requestTimeout = const Duration(seconds: 10),
+    this.recordPolicy = const DnsRecordPolicy(),
   });
+
+  /// Plan limits records are validated against before every write. Pass
+  /// [DnsRecordPolicy.enterprise] for Enterprise zones.
+  final DnsRecordPolicy recordPolicy;
 
   /// How long one HTTP request may take, including reading the response,
   /// before [send] throws a [CloudflareDnsException] with code `timeout`.
@@ -47,9 +53,9 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
 
   /// Sends a JSON request and buffers the full response.
   ///
-  /// HTTP 429 responses are retried up to [maxRetries] times, waiting for the
-  /// `Retry-After` seconds (at most 60) or 1, 2, then 4 seconds. Each attempt
-  /// is limited to [requestTimeout].
+  /// HTTP 429 responses are retried up to [maxRetries] times, waiting as long
+  /// as `Retry-After` asks (seconds or an HTTP date, at most 60 seconds) or
+  /// 1, 2, then 4 seconds. Each attempt is limited to [requestTimeout].
   Future<http.Response> send(
     String method,
     Uri uri, {
@@ -79,9 +85,9 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
         );
       }
       if (response.statusCode != 429 || attempt >= maxRetries) return response;
-      final retryAfter = int.tryParse(response.headers['retry-after'] ?? '');
-      final seconds = (retryAfter ?? 1 << attempt).clamp(0, 60).toInt();
-      await Future<void>.delayed(Duration(seconds: seconds));
+      await Future<void>.delayed(
+        retryDelay(response.headers['retry-after'], attempt, DateTime.now()),
+      );
     }
   }
 
@@ -256,9 +262,35 @@ abstract class RestCloudflareDnsGateway implements CloudflareDnsGateway {
 
   /// Validates [record] and serializes it as a write request body.
   Map<String, Object?> writeBody(DnsRecord record) {
-    DnsRecordValidator.validateOrThrow(record);
+    DnsRecordValidator.validateOrThrow(record, policy: recordPolicy);
     return record.toCloudflareJson();
   }
+}
+
+/// How long to wait before retry number [attempt] (0-based) after a 429
+/// response whose `Retry-After` header is [retryAfter], at [now].
+///
+/// The header may be delay seconds or an HTTP date (RFC 9110); without a
+/// usable value the wait doubles from 1 second. Never more than 60 seconds.
+Duration retryDelay(String? retryAfter, int attempt, DateTime now) {
+  final value = retryAfter?.trim() ?? '';
+  final seconds = int.tryParse(value);
+  Duration delay;
+  if (seconds != null) {
+    delay = Duration(seconds: seconds);
+  } else {
+    try {
+      delay = parseHttpDate(value).difference(now);
+    } on FormatException {
+      delay = Duration(seconds: 1 << attempt);
+    }
+  }
+  const max = Duration(seconds: 60);
+  return delay.isNegative
+      ? Duration.zero
+      : delay > max
+      ? max
+      : delay;
 }
 
 Map<String, Object?> _stringMap(Map<dynamic, dynamic> value) =>

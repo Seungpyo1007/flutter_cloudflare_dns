@@ -1,3 +1,67 @@
+## 0.3.0
+
+**Breaking:**
+
+* Proxied records whose TTL is not automatic (`1`) fail validation with
+  `proxied_ttl`, and TTLs above 86,400 seconds with `invalid_ttl`.
+  Cloudflare always uses automatic TTL for proxied records.
+* `DnsDiagnostics.lookup` returns only answers of the queried type; a CNAME
+  the resolver followed is in `DnsDiagnostics.resolve`'s `cnames`. Answers of
+  types this package does not support, such as RRSIG and DNAME, are dropped.
+* `DnsDiagnostics.compareResolvers` lists a resolver that answers NXDOMAIN in
+  the new `DnsResolverComparison.nxdomainResolvers` instead of
+  `failedResolvers`, so two resolvers that both say the name is gone are
+  consistent.
+* `DnsZoneFile.parse` gives proxied records automatic TTL and reads the
+  trailing comment into `comment` and `tags`.
+
+Added and changed:
+
+* `DnsRecord.copyWith` takes `clear`, a set of `DnsRecordField`s to reset to
+  null, for example `copyWith(clear: {DnsRecordField.comment})`. Other
+  arguments keep their meaning: null or omitted keeps the old value.
+* `DnsRecordPolicy` sets plan limits for validation: TTLs of 60 to 86,400
+  seconds by default, 30 with `DnsRecordPolicy.enterprise`. Pass it as
+  `policy` to `DnsRecordValidator.validate`, as `recordPolicy` to both
+  gateways and the dashboard, and as `policy` to the editor and import
+  sheets.
+* Validate TXT content against Cloudflare's 4,096-byte record limit
+  (`txt_too_long`) and HTTPS/SVCB parameters against RFC 9460
+  (`invalid_svc_params`, `DnsRecordValidator.svcParamsError`).
+* Accept null MX records (`0 .`, RFC 7505) and SRV targets of `.` with port 0.
+* `DnsRecordValidator.validateZone` and `validateInZone` check rules across
+  records: a CNAME next to other records with the same name
+  (`cname_conflict`), identical records (`duplicate_record`), a null MX
+  beside other MX records (`null_mx_conflict`), record sets over 8,192
+  characters (`record_set_too_long`), and apex CNAMEs (`cname_flattened`,
+  info). The editor (new `existingRecords` parameter) and the import preview
+  use them.
+* Internationalized names: `DnsName.toAscii` and `DnsName.toUnicode` convert
+  between Unicode and Punycode. Names and targets are validated, sent, and
+  exported in Punycode, and the record list shows them in Unicode.
+* Zone files carry record comments and tags in Cloudflare's
+  `; comment cf_tags=a,b:c` form, both ways.
+* `DnsDiagnostics.resolve` returns a `DnsLookupResult` with the answers, the
+  CNAME chain, NXDOMAIN, and the DNSSEC `AD` flag.
+  `DnsResolverComparison.cnames` shows the chain per resolver.
+* `DnsHealthReport.dnssecValidated` reports whether every lookup was
+  DNSSEC-validated, and the health card shows it.
+* `watchPropagation(record, removal: true)` waits for a deleted record to
+  disappear, using the new `DnsResolverComparison.lacks`. The dashboard
+  watches deleted DNS-only records and lists them under "Deleted records".
+* The dashboard imports zone files in batches of `importBatchSize` (200,
+  Cloudflare's Free plan limit) and lists every record that was not created
+  with the reason. Imports split into several batches are not atomic.
+* The editor locks TTL to automatic while the Cloudflare proxy is on.
+* `Retry-After` given as an HTTP date is honored.
+* MX records without a priority no longer send `"priority": null`.
+* Right-to-left layouts: padding, alignment, corners, and the add button
+  follow the text direction.
+* Fix the health card header and long record labels overflowing with large
+  text.
+* CI runs the tests on macOS, Windows, and Chrome too, and widget tests cover
+  RTL, text scale 2, and dark mode.
+
 ## 0.2.1
 
 * Fix long TXT values such as DKIM keys never matching across resolvers.

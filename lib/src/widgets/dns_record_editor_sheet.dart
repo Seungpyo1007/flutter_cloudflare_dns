@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../models/dns_health.dart';
 import '../models/dns_record.dart';
 import '../validation/dns_record_validator.dart';
 
@@ -11,6 +12,8 @@ class DnsRecordEditorSheet extends StatefulWidget {
     super.key,
     required this.zoneName,
     this.initialRecord,
+    this.existingRecords = const <DnsRecord>[],
+    this.policy = const DnsRecordPolicy(),
   });
 
   /// Zone used for hints.
@@ -19,11 +22,21 @@ class DnsRecordEditorSheet extends StatefulWidget {
   /// Existing record, or null when creating.
   final DnsRecord? initialRecord;
 
+  /// Records already in the zone. Saving is blocked when the record would
+  /// conflict with them, for example a CNAME next to other records with the
+  /// same name, or an identical record.
+  final List<DnsRecord> existingRecords;
+
+  /// Plan limits the record is validated against, such as the TTL range.
+  final DnsRecordPolicy policy;
+
   /// Opens the editor and returns the submitted record.
   static Future<DnsRecord?> show(
     BuildContext context, {
     required String zoneName,
     DnsRecord? initialRecord,
+    List<DnsRecord> existingRecords = const <DnsRecord>[],
+    DnsRecordPolicy policy = const DnsRecordPolicy(),
   }) {
     return showModalBottomSheet<DnsRecord>(
       context: context,
@@ -34,6 +47,8 @@ class DnsRecordEditorSheet extends StatefulWidget {
       builder: (_) => DnsRecordEditorSheet(
         zoneName: zoneName,
         initialRecord: initialRecord,
+        existingRecords: existingRecords,
+        policy: policy,
       ),
     );
   }
@@ -108,7 +123,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
   }
 
   DnsRecord _buildRecord() {
-    final ttl = int.tryParse(_ttl.text) ?? 1;
+    final ttl = _ttlLocked ? 1 : int.tryParse(_ttl.text) ?? 1;
     final initial = widget.initialRecord;
     final name = _name.text.trim();
     final commentText = _comment.text.trim();
@@ -196,6 +211,9 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
     }
   }
 
+  /// Proxied records always use automatic TTL, so the TTL choice is locked.
+  bool get _ttlLocked => _supportsProxy && _proxied;
+
   bool get _supportsProxy =>
       _type == DnsRecordType.a ||
       _type == DnsRecordType.aaaa ||
@@ -243,7 +261,14 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
   void _submit() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final record = _buildRecord();
-    final issues = DnsRecordValidator.validate(record);
+    final issues = <DnsIssue>[
+      ...DnsRecordValidator.validate(record, policy: widget.policy),
+      ...DnsRecordValidator.validateInZone(
+        record,
+        widget.existingRecords,
+        zoneName: widget.zoneName,
+      ),
+    ];
     if (issues.isNotEmpty) {
       setState(() => _formError = issues.first.message);
       return;
@@ -415,13 +440,27 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
                   icon: Icons.tune_rounded,
                 ),
               ],
-              selected: _ttlCustom ? null : int.tryParse(_ttl.text),
+              selected: _ttlLocked
+                  ? 1
+                  : _ttlCustom
+                  ? null
+                  : int.tryParse(_ttl.text),
               compactUnselected: false,
               selectedFactor: 1.28,
               motion: motion,
               semanticsSuffix: 'TTL',
-              onSelected: _selectTtl,
+              onSelected: _ttlLocked ? null : _selectTtl,
             ),
+            if (_ttlLocked)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Proxied records always use automatic TTL.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ),
             AnimatedSize(
               duration: motion,
               curve: const Cubic(0.2, 0, 0, 1),
@@ -435,7 +474,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
                     child: child,
                   ),
                 ),
-                child: _ttlCustom
+                child: _ttlCustom && !_ttlLocked
                     ? Padding(
                         key: const ValueKey<String>('custom-ttl-field'),
                         padding: const EdgeInsets.only(top: 12),
@@ -549,7 +588,7 @@ class _DnsRecordEditorSheetState extends State<DnsRecordEditorSheet> {
                 type: _type,
                 name: _name.text.trim().isEmpty ? '@' : _name.text.trim(),
                 value: _previewValue,
-                ttl: _ttl.text,
+                ttl: _ttlLocked ? '1' : _ttl.text,
                 proxied: _supportsProxy && _proxied,
                 motion: motion,
               ),
@@ -930,11 +969,11 @@ class _MorphingChoiceButtonState<T> extends State<_MorphingChoiceButton<T>> {
       colors.onPrimaryContainer,
       amount,
     );
-    final selectedShape = BorderRadius.only(
-      topLeft: const Radius.circular(28),
-      topRight: const Radius.circular(28),
-      bottomLeft: const Radius.circular(28),
-      bottomRight: Radius.circular(8 + 20 * (1 - amount)),
+    final selectedShape = BorderRadiusDirectional.only(
+      topStart: const Radius.circular(28),
+      topEnd: const Radius.circular(28),
+      bottomStart: const Radius.circular(28),
+      bottomEnd: Radius.circular(8 + 20 * (1 - amount)),
     );
 
     return Semantics(
@@ -975,7 +1014,7 @@ class _MorphingChoiceButtonState<T> extends State<_MorphingChoiceButton<T>> {
                         child: ClipRect(
                           child: Align(
                             widthFactor: amount,
-                            alignment: Alignment.centerLeft,
+                            alignment: AlignmentDirectional.centerStart,
                             child: Opacity(
                               opacity: amount,
                               child: Text(
@@ -1048,11 +1087,11 @@ class _RecordPreview extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: colors.tertiaryContainer,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(26),
-          topRight: Radius.circular(26),
-          bottomLeft: Radius.circular(26),
-          bottomRight: Radius.circular(8),
+        borderRadius: const BorderRadiusDirectional.only(
+          topStart: Radius.circular(26),
+          topEnd: Radius.circular(26),
+          bottomStart: Radius.circular(26),
+          bottomEnd: Radius.circular(8),
         ),
       ),
       child: Column(
@@ -1208,11 +1247,11 @@ class _EditorHeader extends StatelessWidget {
           height: 52,
           decoration: BoxDecoration(
             color: colors.primaryContainer,
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(20),
-              topRight: Radius.circular(20),
-              bottomLeft: Radius.circular(20),
-              bottomRight: Radius.circular(7),
+            borderRadius: const BorderRadiusDirectional.only(
+              topStart: Radius.circular(20),
+              topEnd: Radius.circular(20),
+              bottomStart: Radius.circular(20),
+              bottomEnd: Radius.circular(7),
             ),
           ),
           child: AnimatedSwitcher(
